@@ -1,5 +1,4 @@
 from __future__ import print_function
-from pythtb import * # import TB model class
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
@@ -7,13 +6,14 @@ import time
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.ticker import FuncFormatter
+from matplotlib.colors import Normalize
 import os
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 import re
 import argparse
+from datetime import datetime
 
-storage_path = "/tobiasholder-storage/ofirbarogel"
 sys_dict = {"Nk":10,"kxlist":np.linspace(-np.pi,np.pi,10),"kylist":np.linspace(-np.pi,np.pi,10),"NQ":19,"Qxlist":np.linspace(-2*np.pi,2*np.pi,19),"Qylist":np.linspace(-2*np.pi,2*np.pi,19),"U":16,"epsilon":1e-6,"M": -1.1, "Bands": 2} #defaults
 
 
@@ -388,7 +388,7 @@ def UnFlatten2D(array2D):
 
 def PiFormatter(value, tick_number):#just to be cute
     return f"{np.round(value/np.pi,3)}π"
-def Plot3D(eQ_matrix,n):
+def Plot3D(eQ_matrix,n,output_folder):
     #eQ_matrix is the completed exciton eigenenergies grid while n is the number of energy levels we wish to show
     Qxlist = sys_dict["Qxlist"]
     Qylist = sys_dict["Qylist"]
@@ -405,9 +405,9 @@ def Plot3D(eQ_matrix,n):
     ax.set_ylabel('Qy')
     ax.set_zlabel(r'$\epsilon_Q$')
     plt.title("Exciton EigenEnergy")
-    output_folder = "Images"
+    #output_folder = "Images"
     #output_path = os.path.join(output_folder, f'Nk={Nk},epsilon={epsilon},U={U},M={M}.png')
-    output_path = os.path.join(output_folder, f'MoS2 Excitons 3D Nk={Nk}, bands={n}.png')
+    output_path = output_folder /  f'MoS2 Excitons 3D Nk={Nk}, bands={n}.png'
     plt.savefig(output_path)
     plt.close()
     #plt.show()
@@ -436,7 +436,7 @@ def Plot2D(eigenvalMatrix):
 
 
 #Only for chern insulator rn
-def GraphQxConst(eQ_matrix):
+def GraphQxConst(eQ_matrix,output_folder):
     #Qxlist= sys_dict["Qxlist"]
     Qylist = sys_dict["Qylist"]
     Nk= sys_dict["Nk"]
@@ -469,9 +469,9 @@ def GraphQxConst(eQ_matrix):
     ax.xaxis.set_major_formatter(FuncFormatter(PiFormatter))
     plt.ylabel("energy") #good dealer
     #plt.legend()
-    output_folder = "Images"
+    #output_folder = "Images"
     #output_path = os.path.join(output_folder, f'Nk={Nk},epsilon={epsilon},U={U},M={M}.png')
-    output_path = os.path.join(output_folder, f'MoS2 Nk={Nk},epsilon={epsilon},U={U}.png')
+    output_path = output_folder /  f'MoS2 Nk={Nk},epsilon={epsilon},U={U}.png'
     plt.savefig(output_path)
     plt.close()
     #plt.show()
@@ -540,8 +540,7 @@ def add_title_to_image(image_path, title, font_size=40, padding=10):
 
 
 
-image_folder = Path("Images")
-gif_folder = Path("Gifs")
+
 def CreateGifs():
     # Here write an array for whatever variable
     Nk_range =  list(range(8,16,2))
@@ -616,7 +615,7 @@ def CreateGifs():
 # In[76]:
 
 
-def GraphIntegratedF(F):
+def GraphIntegratedF(F, output_folder):
     x = sys_dict["Qxlist"]
     y = sys_dict["Qylist"]
     Nk = sys_dict["Nk"]
@@ -630,24 +629,60 @@ def GraphIntegratedF(F):
     plt.xlabel('Qx')
     plt.ylabel('Qy')
     plt.title('Integrated F (abs)')
-    output_folder = "Images"
+    #output_folder = "Images"
     #output_path = os.path.join(gif_folder, f'Nk={Nk},epsilon={epsilon},U={U},M={M}.png')
-    output_path = os.path.join(output_folder, f'F for 3band MoS2, bottom 2bands, F[1], Nk={Nk}.png')
+    output_path = output_folder / f'F for 3band MoS2, bottom 2bands, F[1], Nk={Nk}.png'
     plt.savefig(output_path)
     plt.close()
     #plt.show()
 
-#TODO: change all show() to save
+def GraphFPhase(F, output_folder):
+    x = sys_dict["Qxlist"]
+    y = sys_dict["Qylist"]
+    plt.figure()
+    im = plt.imshow(F, aspect='auto', origin='lower',
+               extent=[x[0], x[-1], y[0], y[-1]])
+    
+    # Apply formatter to x-axis
+    ax = plt.gca()
+    ax.xaxis.set_major_formatter(FuncFormatter(PiFormatter))
+    ax.yaxis.set_major_formatter(FuncFormatter(PiFormatter))
+    cb = plt.colorbar(im, label='Phase')
+    ticks = cb.get_ticks()
+    cb.set_ticklabels([PiFormatter(t, None) for t in ticks])
+    plt.xlabel('Qx')
+    plt.ylabel('Qy')
+    plt.title('Integrated F phase')
+    output_path = os.path.join(output_folder, f'F phase for 3band MoS2, 2band interaction, F[1].png')
+    plt.savefig(output_path)
+    plt.close()
+
+def SaveData(data,filename,folder):
+    if not filename.endswith('.npy'):
+        filename += '.npy'
+    full_path = folder / filename
+    np.save(full_path, data)
+
+
+
 if __name__ == "__main__":
     #args
     parser = argparse.ArgumentParser(description="Calculate Excitons")
     parser.add_argument('-Nk', '--Nk', type=int, help="Number of k points in non interacting BZ (NQ=2Nk)", required=True)
     Nk = parser.parse_args().Nk
-    #Images and gifs directories
-    os.makedirs(gif_folder, exist_ok=True)  # Ensure output folder exists
-    os.makedirs(image_folder, exist_ok=True)
+    #directories
+    image_folder = Path("Images")
+    gif_folder = Path("Gifs")
+    data_folder = Path("Data")
+    storage_path = Path("/tobiasholder-storage/ofirbarogel")
+    gif_path = storage_path / gif_folder
+    image_path = storage_path / image_folder
+    data_path = storage_path / data_folder
+    os.makedirs(gif_path, exist_ok=True) 
+    os.makedirs(image_path, exist_ok=True)
+    os.makedirs(data_path, exist_ok=True)
     #run single
-    Nk = sys_dict["Nk"]
+    sys_dict["Nk"] = Nk
     sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk)
     sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk)
     NQ = 2*Nk-1
@@ -658,9 +693,17 @@ if __name__ == "__main__":
     sys_dict["Bands"] = 3
     ni_evals,ni_wf = SolveBzNoninteracting()
     eQ_matrix, integrated_f = SolveInteracting(ni_evals,ni_wf)
-    Plot3D(eQ_matrix,1)
-    GraphQxConst(eQ_matrix)
+    Plot3D(eQ_matrix,1,image_path)
+    GraphQxConst(eQ_matrix,image_path)
     #Fs
+    phase_integrated_f_matrix = np.angle(integrated_f[:,:,1])
+    GraphFPhase(phase_integrated_f_matrix,image_path)
     abs_integrated_f_matrix = np.abs(integrated_f[:,:,1])
-    GraphIntegratedF(abs_integrated_f_matrix)
+    GraphIntegratedF(abs_integrated_f_matrix,image_path)
+    #Savedata
+    now = datetime.now()
+    # Format as string
+    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    SaveData(integrated_f,f"Integrated_Fs({timestamp})", data_path)
+    SaveData(eQ_matrix,f"Exciton_Energys({timestamp})", data_path)
 # # 

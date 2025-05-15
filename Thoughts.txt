@@ -1,9 +1,11 @@
 the rectangular parametrization is:
 kx 0-> 2pi ky 0 -> 4pi/sqrt(3)
-1. read Macdonald https://journals.aps.org/prb/pdf/10.1103/PhysRevB.91.075310 and understand how to solve multi-band Bethe-Salpeter (probably requires 2 dimension squishes)
-2. have everything work first try
-3. run on cluster
-4. nobel peace prize
+
+1. why is the period 1BZ?
+2. does F fulfill the symmetry? look at O-S(^-1)OS where S is the symmetry transformation. rotations (which?) and inversion 
+3. multi band formulation of bethe-salpeter
+4. have everything work first try
+5. nobel peace prize
 
 What are the interactions that effect the zeros in F? exchange? momentum dependence of interaction? rank of the matrix does not match the dim means eig=0
 
