@@ -639,6 +639,7 @@ def GraphIntegratedF(F, output_folder):
 def GraphFPhase(F, output_folder):
     x = sys_dict["Qxlist"]
     y = sys_dict["Qylist"]
+    Nk = sys_dict["Nk"]
     plt.figure()
     im = plt.imshow(F, aspect='auto', origin='lower',
                extent=[x[0], x[-1], y[0], y[-1]])
@@ -653,7 +654,7 @@ def GraphFPhase(F, output_folder):
     plt.xlabel('Qx')
     plt.ylabel('Qy')
     plt.title('Integrated F phase')
-    output_path = os.path.join(output_folder, f'F phase for 3band MoS2, 2band interaction, F[1].png')
+    output_path = os.path.join(output_folder, f'F phase for 3band MoS2, 2band interaction, F[1], Nk={Nk}.png')
     plt.savefig(output_path)
     plt.close()
 
