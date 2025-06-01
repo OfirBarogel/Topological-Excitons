@@ -1,4 +1,4 @@
-the rectangular parametrization is:
+calthe rectangular parametrization is:
 kx 0-> 2pi ky 0 -> 4pi/sqrt(3)
 
 1. why is the period 1BZ?
@@ -11,18 +11,6 @@ What are the interactions that effect the zeros in F? exchange? momentum depende
 
 Thought:
 In MacDonald exciton band structure MoS_2 he uses a Hamiltonian consisting of the three band TNN H_even (d_{z^2} d_{xy} d_{x^2-y^2}) and a 2 band H_odd (d_xz d_yz) on the diagonal to produce a 5 band system to which he adds SOC so 10 band(?). I on the other hand am trying to use the 6 band TNN w/SOC.
-Problems:
-I dont have a very well defined conduction and valance bc of band crossings in SOC.
-Solution:
-the way I see Macdonald do it is by identifying a single gap and calling what is under it valance and above conduction, as in v_1 v_2, c_1 c_2. Perhaps bc low energy states are more dominant. In my code I'll write it so I can look at any number of bands.
-- I will use the 6 band hamiltonian I have rn and only after creating excitons will I look at changing the non interacting Hamiltonian.
-
-Thought:
-Macdonald claims V_R is a linear combination of struve and bessel and that V_k is the lattice fourier transform of that.
-Problem:
-how is that in any shape like V_k that we use? Im seeing stuff like 1/k^2 not 1/|k|.
-Solution:
-these are different potentials, screened and unscreened. i can look at both
 
 Thought:
 there is a better gauge, Tobias chat
@@ -33,3 +21,9 @@ what properties of band structure and interactions cause the F winding
 
 
 do 3band (once simple cond valance and once for one valance 2 conduction) plot F (abs int) and their phase (check if the phase is all on the first element or if this is complicated af.
+
+TODO
+1. Calculate berry curvature and chern number for F's
+2. Plot the band crossings in k space to see if they matter, across the whole BZ ofc.
+3. constant interaction
+4. when looking at const interaction also plot non integrated F(Q,0) first value in F's

@@ -7,6 +7,7 @@
 #PBS -l mem=256gb
 #PBS -m bea
 #PBS -M ofirbarogel@mail.tau.ac.il
+#PBS -o logs/job_${PBS_JOBID}.log
 #PBS -j oe
 
 # Go to job's submission directory
@@ -24,7 +25,9 @@ chmod 700 $XDG_RUNTIME_DIR
 source te-env/bin/activate
 
 # Run script
-python 'Topological Excitons.py' -Nk 12
+python 'Topological Excitons.py'
+
+echo "Job finished successfully at $(date)"
 
 # Deactivate
 deactivate

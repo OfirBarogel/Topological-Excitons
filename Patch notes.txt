@@ -1,7 +1,6 @@
-ver 0.1.0
+ver 0.1.1
 
-Started taking patch notes, noting wheat new features are added and other version tracking features.
-
-Calculations-wise the code can run the bethe salpeter equation for 2 bands. There is a QWZ Hamiltonian and MoS_2 Hamiltonian. As of now all calculations for MoS_2 were done on 3band model with no SOC. The version here is the one on the cluster, the main objective of this commit is to work on desktop during shavuot.
-
--Added quiver plot for phases.
+- Added save F's without integrating
+- Removed all plots from cluster side, from now on will only create data. Plots will be created off cluster
+- added config yml instead of changing paramaters in code
+- saves data and config to a folder in data, unique folder for each run
