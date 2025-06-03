@@ -15,9 +15,23 @@ import argparse
 from datetime import datetime
 import yaml
 
-with open("config.yml", 'r') as stream:
-    sys_dict = yaml.load(stream, Loader=yaml.UnsafeLoader)
+def GetConfig(filename = "config.yml"):
+    global sys_dict
+    with open(filename, 'r') as stream:
+        sys_dict = yaml.load(stream, Loader=yaml.UnsafeLoader)
+    Nk=sys_dict["Nk"]
+    sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk)
+    sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk)
+    sys_dict["NQ"] = 2*Nk-1
+    sys_dict["Qxlist"] = np.linspace(0,4*np.pi,2*Nk-1)
+    sys_dict["Qylist"] = np.linspace(0,8*np.pi/np.sqrt(3),2*Nk-1)
 
+def SaveConfig(config_file):
+    keys_to_save = ["version", "Hamiltonian", "Nk", "U", "epsilon", "Bands"]
+    config = {key: sys_dict[key] for key in keys_to_save if key in sys_dict}
+    with open(config_file, 'w') as outfile:
+        yaml.dump(config, outfile, default_flow_style=False)
+        
 def ChernHamiltonian(kx,ky):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
     M = -1.1
@@ -251,6 +265,7 @@ def SaveData(data,filename,folder):
 
 
 if __name__ == "__main__":
+    GetConfig()
     now = datetime.now()
     # Format as string
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
@@ -259,6 +274,8 @@ if __name__ == "__main__":
     storage_path = Path("/tobiasholder-storage/ofirbarogel")
     data_path = storage_path / data_folder
     os.makedirs(data_path, exist_ok=True)
+    config_file = data_path / "config.yml"
+    SaveConfig(config_file)
     ni_evals,ni_wf = SolveBzNoninteracting()
     eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
     integrated_f = np.sum(f_matrix,axis=2)
@@ -268,7 +285,4 @@ if __name__ == "__main__":
     SaveData(integrated_f,"Integrated_Fs", data_path) #[NQ,NQ,Nk*Nk]
     SaveData(eQ_matrix,"Exciton_Energys", data_path) #[NQ,NQ,Nk*Nk]
     SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
-    config_file = data_path / "config.yml"
-    with open(config_file, 'w') as outfile:
-        yaml.dump(sys_dict, outfile, default_flow_style=False)
 # # 
