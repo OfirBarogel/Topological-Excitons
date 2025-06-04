@@ -280,7 +280,7 @@ if __name__ == "__main__":
     eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
     integrated_f = np.sum(f_matrix,axis=2)
     #Fs
-    phase_integrated_f_matrix = np.angle(integrated_f[:,:,1])
+    phase_integrated_f_matrix = np.angle(integrated_f[:,:,0])
     #Savedata
     SaveData(integrated_f,"Integrated_Fs", data_path) #[NQ,NQ,Nk*Nk]
     SaveData(eQ_matrix,"Exciton_Energys", data_path) #[NQ,NQ,Nk*Nk]
