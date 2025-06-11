@@ -22,8 +22,6 @@ what properties of band structure and interactions cause the F winding
 
 do 3band (once simple cond valance and once for one valance 2 conduction) plot F (abs int) and their phase (check if the phase is all on the first element or if this is complicated af.
 
-TODO
-1. Calculate berry curvature and chern number for F's
-2. Plot the band crossings in k space to see if they matter, across the whole BZ ofc.
-3. constant interaction
-4. when looking at const interaction also plot non integrated F(Q,0) first value in F's
+TODO:
+1. Plot the band crossings in k space to see if they matter, across the whole BZ ofc.
+2. save logs to correct place

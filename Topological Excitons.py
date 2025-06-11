@@ -27,7 +27,7 @@ def GetConfig(filename = "config.yml"):
     sys_dict["Qylist"] = np.linspace(0,8*np.pi/np.sqrt(3),2*Nk-1)
 
 def SaveConfig(config_file):
-    keys_to_save = ["version", "Hamiltonian", "Nk", "U", "epsilon", "Bands"]
+    keys_to_save = ["version", "Hamiltonian", "Nk", "U", "epsilon", "Bands","Interaction"]
     config = {key: sys_dict[key] for key in keys_to_save if key in sys_dict}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
@@ -183,6 +183,7 @@ def GetBerryCurvature1band(N,u):
     #print(C)
     return BC
 
+#TODO: fix this so it works on all bands
 def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
     U = sys_dict["U"]
     epsilon = sys_dict["epsilon"]
@@ -192,6 +193,7 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
     Qylist = sys_dict["Qylist"]
     NQ = sys_dict["NQ"]
     Nk = sys_dict["Nk"]
+    interaction = sys_dict["Interaction"]
     #H = np.zeros((NQ,Nk,NQ,Nk), dtype = complex) #H(k,k')
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex) #H(k,k')
     for kx in range(Nk):
@@ -207,8 +209,12 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
                         e = ni_evals[kx_Qx][ky_Qy][0]- ni_evals[kx][ky][1]
                     else:
                         e = 0
-                    V_d = 1/(pow(Nk,2)*(np.sqrt((pow(kxlist[kx-kx_tag],2) + pow(kylist[ky-ky_tag],2))))+epsilon)
-                    V_x = 1/(pow(Nk,2)*(np.sqrt(pow(Qxlist[Qx_indx]+half_dQx,2)+pow(Qylist[Qy_indx]+half_dQy,2)))+epsilon)
+                    if interaction[0] == "Coulomb":
+                        V_d = 1/(pow(Nk,2)*(np.sqrt((pow(kxlist[kx-kx_tag],2) + pow(kylist[ky-ky_tag],2))))+epsilon)
+                        V_x = 1/(pow(Nk,2)*(np.sqrt(pow(Qxlist[Qx_indx]+half_dQx,2)+pow(Qylist[Qy_indx]+half_dQy,2)))+epsilon)
+                    elif interaction[0] == "Constant":
+                        V_d = interaction[1]
+                        V_x = interaction[2]
                     D = U*V_d*np.vdot(wf_ni[kx_Qx,ky_Qy,:,0],wf_ni[kx_Qx_tag,ky_Qy_tag,:,0])*np.vdot(wf_ni[kx_tag,ky_tag,:,1],wf_ni[kx,ky,:,1]) #N=1?
                     X = U*V_x*np.vdot(wf_ni[kx_Qx,ky_Qy,:,1],wf_ni[kx,ky,:,0])*np.vdot(wf_ni[kx_tag,ky_tag,:,0],wf_ni[kx_Qx_tag,ky_Qy_tag,:,1])
                     H[kx,ky,kx_tag,ky_tag] = e - (D-X)

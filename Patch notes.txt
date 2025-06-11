@@ -1,6 +1,8 @@
-ver 0.1.1
+ver 0.1.2
 
-- Added save F's without integrating
-- Removed all plots from cluster side, from now on will only create data. Plots will be created off cluster
-- added config yml instead of changing paramaters in code
-- saves data and config to a folder in data, unique folder for each run
+Major:
+- Added constant interaction
+minor:
+- changed config to contain minimal information for easy editing
+- added FSlicer because F's was too big and couldnt be loaded on RAM
+- created BC plot for F[0] as well as calculated chern number (8)
