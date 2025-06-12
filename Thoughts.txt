@@ -4,8 +4,6 @@ kx 0-> 2pi ky 0 -> 4pi/sqrt(3)
 1. why is the period 1BZ?
 2. does F fulfill the symmetry? look at O-S(^-1)OS where S is the symmetry transformation. rotations (which?) and inversion 
 3. multi band formulation of bethe-salpeter
-4. have everything work first try
-5. nobel peace prize
 
 What are the interactions that effect the zeros in F? exchange? momentum dependence of interaction? rank of the matrix does not match the dim means eig=0
 
@@ -19,9 +17,10 @@ Thought:
 what properties of band structure and interactions cause the F winding
 (maybe look at an expansion around k-k'=Q, focus on the exchange interaction)
 
+Thought:
+couldnt figure out how to measure the effect of the band crossings. as in how much of the berry curvature is a result of the wrong band
 
 do 3band (once simple cond valance and once for one valance 2 conduction) plot F (abs int) and their phase (check if the phase is all on the first element or if this is complicated af.
 
 TODO:
 1. Plot the band crossings in k space to see if they matter, across the whole BZ ofc.
-2. save logs to correct place
