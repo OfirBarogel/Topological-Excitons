@@ -1,4 +1,4 @@
-calthe rectangular parametrization is:
+the rectangular parametrization is:
 kx 0-> 2pi ky 0 -> 4pi/sqrt(3)
 
 1. why is the period 1BZ?
@@ -7,20 +7,14 @@ kx 0-> 2pi ky 0 -> 4pi/sqrt(3)
 
 What are the interactions that effect the zeros in F? exchange? momentum dependence of interaction? rank of the matrix does not match the dim means eig=0
 
-Thought:
-In MacDonald exciton band structure MoS_2 he uses a Hamiltonian consisting of the three band TNN H_even (d_{z^2} d_{xy} d_{x^2-y^2}) and a 2 band H_odd (d_xz d_yz) on the diagonal to produce a 5 band system to which he adds SOC so 10 band(?). I on the other hand am trying to use the 6 band TNN w/SOC.
-
-Thought:
-there is a better gauge, Tobias chat
-
-Thought:
-what properties of band structure and interactions cause the F winding
-(maybe look at an expansion around k-k'=Q, focus on the exchange interaction)
-
-Thought:
-couldnt figure out how to measure the effect of the band crossings. as in how much of the berry curvature is a result of the wrong band
-
-do 3band (once simple cond valance and once for one valance 2 conduction) plot F (abs int) and their phase (check if the phase is all on the first element or if this is complicated af.
+Thought: Carolina says: "one important point to consider
+is that the geometric quantites of the line bundle LF will
+depend on the specific choice of p, however the topology
+will not be affected by this choice." and proceeds to define the singular connection for F(p=0,Q) does this same reasoninng apply for integrated F(Q)? should I instead take one value of F in p space?
 
 TODO:
-1. Plot the band crossings in k space to see if they matter, across the whole BZ ofc.
+0. look at the vorticity around zeros
+1. make sure the chern number really really is an integer always (in single no, check F's? maybe after exciton wf?)
+2. create the exciton wf, note that unlike carolina you take p+Q and p, not P+Q/2. check the exciton wf's berry curvature
+3. smaller constant interaction, around 0.7
+4. different const interaction ratios 1.5,1 0.5,1

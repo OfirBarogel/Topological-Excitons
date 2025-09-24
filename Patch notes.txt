@@ -2,8 +2,10 @@ ver 0.1.2
 
 Major:
 - Added constant interaction
+- Added singular connection vorticity calculation
 minor:
 - changed config to contain minimal information for easy editing
 - added FSlicer because F's was too big and couldnt be loaded on RAM
 - created BC plot for F[0] as well as calculated chern number (8)
 - Saves logs correctly in cluster (q.sh)
+- Save 3D band structure graph as html interactive file. (noteboook)
