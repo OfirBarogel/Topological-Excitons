@@ -3,6 +3,7 @@ ver 0.1.2
 Major:
 - Added constant interaction
 - Added singular connection vorticity calculation
+- Added modified MoS_2 Hamiltonian with separated bands
 minor:
 - changed config to contain minimal information for easy editing
 - added FSlicer because F's was too big and couldnt be loaded on RAM
