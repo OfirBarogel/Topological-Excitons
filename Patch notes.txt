@@ -1,11 +1,14 @@
-ver 0.1.2
+ver 0.1.3
 
 Major:
 - Added constant interaction
 - Added singular connection vorticity calculation
 - Added modified MoS_2 Hamiltonian with separated bands
+- Added SOC+Zeeman so the middle bands separate
+- added parallel transport gauge
+-changed config structure
+-changed .sh file to accept array of configs in config file
 minor:
-- changed config to contain minimal information for easy editing
 - added FSlicer because F's was too big and couldnt be loaded on RAM
 - created BC plot for F[0] as well as calculated chern number (8)
 - Saves logs correctly in cluster (q.sh)

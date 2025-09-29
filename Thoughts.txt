@@ -18,3 +18,10 @@ TODO:
 2. create the exciton wf, note that unlike carolina you take p+Q and p, not P+Q/2. check the exciton wf's berry curvature
 3. smaller constant interaction, around 0.7
 4. different const interaction ratios 1.5,1 0.5,1
+
+
+
+
+N=$(ls configs/*.yml | wc -l)
+sbatch --array=0-$((N-1)) run.sh
+example for 4 ymls: sbatch --array=0-3 run.sh
