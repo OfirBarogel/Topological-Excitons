@@ -14,7 +14,7 @@ import re
 import argparse
 from datetime import datetime
 import yaml
-
+#ver 0.1.3
 def GetConfig(filename):
     global sys_dict
     with open(filename, 'r') as stream:

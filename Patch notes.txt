@@ -6,10 +6,10 @@ Major:
 - Added modified MoS_2 Hamiltonian with separated bands
 - Added SOC+Zeeman so the middle bands separate
 - added parallel transport gauge
--changed config structure
--changed .sh file to accept array of configs in config file
+- changed config structure
 minor:
 - added FSlicer because F's was too big and couldnt be loaded on RAM
 - created BC plot for F[0] as well as calculated chern number (8)
-- Saves logs correctly in cluster (q.sh)
+- Saves logs correctly in cluster (q.sh,run.sh)
 - Save 3D band structure graph as html interactive file. (noteboook)
+ - .py version accepts argument for config path, changed run.sh accordingly, new command is qsub -q power-tobiasholder run.sh configs/mos2_modified_const.yml of example(run.sh)
