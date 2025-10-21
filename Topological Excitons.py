@@ -234,11 +234,12 @@ def SolveBzNoninteracting():
     ky = sys_dict["kylist"]
     n_points = sys_dict["Nk"]
     n_bands = sys_dict["Bands"]
+    eps = sys_dict.get("epsilon")
     wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
     eval_BZ = np.zeros((n_points,n_points,n_bands))
     for i in range(n_points):
         for j in range(n_points):      
-            (val,vec)=SolveH(kx[i],ky[j])
+            (val,vec)=SolveH(kx[i]+eps,ky[j]+eps)
             #for l in range(vec.shape[1]):
             #    phase = np.angle(vec[0,l])
             #    vec = vec * np.exp(-1j*phase)
@@ -246,6 +247,29 @@ def SolveBzNoninteracting():
             wf_BZ[i,j] = vec
     wf_BZ = FixGauge(wf_BZ)
     return eval_BZ, wf_BZ
+
+b1 = np.array([2*np.pi, -2*np.pi/np.sqrt(3.0)])
+b2 = np.array([0.0,      4*np.pi/np.sqrt(3.0)])
+B  = np.column_stack([b1, b2])
+Binv = np.linalg.inv(B)
+
+def k_minimum_image(k, kp):
+    # 1) Fractional difference and primitive-parallelogram wrap
+    c  = Binv @ k
+    cp = Binv @ kp
+    dc = c - cp
+    dc -= np.round(dc)            # wrap to +-1/2
+
+    # 2) Candidate in the primitive cell
+    qP = B @ dc
+
+    # 3) WS refinement
+    cand = [qP,
+            qP - b1, qP + b1,
+            qP - b2, qP + b2,
+            qP - (b1 + b2), qP + (b1 + b2)]
+    q_star = min(cand, key=lambda v: v[0]**2 + v[1]**2)
+    return q_star
 
 def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
     U = sys_dict["U"]
@@ -259,6 +283,7 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
     interaction = sys_dict["interaction"]
     c_band = sys_dict["c_band"]
     v_band = sys_dict["v_band"]
+    wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
     for kx in range(Nk):
         for ky in range(Nk):
@@ -269,21 +294,29 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
                     ky_Qy = (ky+Qy_indx)%Nk
                     ky_Qy_tag = (ky_tag+Qy_indx)%Nk
                     if kx==kx_tag and ky==ky_tag:
-                        e = ni_evals[kx_Qx][ky_Qy][0]- ni_evals[kx][ky][c_band]
+                        e = ni_evals[kx_Qx][ky_Qy][c_band]- ni_evals[kx][ky][v_band]
                     else:
                         e = 0
                     if interaction.get("kind") == "coulomb":
-                        V_d = 1/(pow(Nk,2)*(np.sqrt((pow(kxlist[kx-kx_tag],2) + pow(kylist[ky-ky_tag],2))))+epsilon)
-                        V_x = 1/(pow(Nk,2)*(np.sqrt(pow(Qxlist[Qx_indx]+half_dQx,2)+pow(Qylist[Qy_indx]+half_dQy,2)))+epsilon)
+                        k_vec = np.array([kxlist[kx],kylist[ky]])
+                        ktag_vec = np.array([kxlist[kx_tag],kylist[ky_tag]])
+                        deltak_vec = k_minimum_image(k_vec, ktag_vec)
+                        deltak_norm  = np.linalg.norm(deltak_vec)
+                        V_d = 1/(deltak_norm+epsilon)
+                        V_x = 1/(np.sqrt(pow(Qxlist[Qx_indx]+half_dQx,2)+pow(Qylist[Qy_indx]+half_dQy,2))+epsilon)
                     elif interaction.get("kind") == "constant":
                         params = interaction.get("params")
                         V_d = params.get('vd')
                         V_x = params.get('vx')
                     else:
                         raise ValueError("Could not parse acceptable interaction kind")
-                    D = U*V_d*np.vdot(wf_ni[kx_Qx,ky_Qy,:,v_band],wf_ni[kx_Qx_tag,ky_Qy_tag,:,v_band])*np.vdot(wf_ni[kx_tag,ky_tag,:,c_band],wf_ni[kx,ky,:,c_band])
-                    X = U*V_x*np.vdot(wf_ni[kx_Qx,ky_Qy,:,c_band],wf_ni[kx,ky,:,v_band])*np.vdot(wf_ni[kx_tag,ky_tag,:,v_band],wf_ni[kx_Qx_tag,ky_Qy_tag,:,c_band])
-                    H[kx,ky,kx_tag,ky_tag] = e - (D-X)
+                    uc_kQ   = wf_ni[kx_Qx,ky_Qy,:,c_band]
+                    uc_kpQ  = wf_ni[kx_Qx_tag,ky_Qy_tag,:,c_band]
+                    uv_k    = wf_ni[kx,ky,:,v_band]
+                    uv_kp   = wf_ni[kx_tag,ky_tag,:,v_band]
+                    D = U*V_d*np.vdot(uc_kQ, uc_kpQ) * np.vdot(uv_kp, uv_k)
+                    X = U*V_x*np.vdot(uc_kQ, uv_k) * np.vdot(uv_kp, uc_kpQ)
+                    H[kx,ky,kx_tag,ky_tag] = e - wk*(D-X)
     return H
 
 def SolveInteracting(ni_evals,ni_wf):
@@ -348,16 +381,18 @@ if __name__ == "__main__":
     data_folder = Path(f"Data/{timestamp}")
     storage_path = Path("/tobiasholder-storage/ofirbarogel")
     data_path = storage_path / data_folder
+    sub_data_path = data_path / Path(f"{timestamp}")
     os.makedirs(data_path, exist_ok=True)
-    config_file = data_path / "config.yml"
+    os.makedirs(sub_data_path, exist_ok=True)
+    config_file = sub_data_path / "config.yml"
     SaveConfig(config_file)
     ni_evals,ni_wf = SolveBzNoninteracting()
     eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
     integrated_f = np.sum(f_matrix,axis=2)
-    #Fs
-    phase_integrated_f_matrix = np.angle(integrated_f[:,:,0])
+    F0 = f_matrix[:,:,:,0]
     #Savedata
-    SaveData(integrated_f,"Integrated_Fs", data_path) #[NQ,NQ,Nk*Nk]
-    SaveData(eQ_matrix,"Exciton_Energys", data_path) #[NQ,NQ,Nk*Nk]
+    SaveData(integrated_f,"Integrated_Fs", sub_data_path) #[NQ,NQ,Nk*Nk]
+    SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
+    SaveData(F0, "F[0]",sub_data_path)
     SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
 # # 
