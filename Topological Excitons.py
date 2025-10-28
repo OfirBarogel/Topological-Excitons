@@ -30,11 +30,8 @@ def GetConfig(filename):
         else:
             sys_dict["Bands"] = 3
     Nk = sys_dict.get("Nk")
-    sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk)
-    sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk)
-    sys_dict["NQ"] = 2*Nk-1
-    sys_dict["Qxlist"] = np.linspace(0,4*np.pi,2*Nk-1)
-    sys_dict["Qylist"] = np.linspace(0,8*np.pi/np.sqrt(3),2*Nk-1)
+    sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
+    sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk, endpoint = False)
     
 def SaveConfig(config_file):
     keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band"]
@@ -271,15 +268,14 @@ def k_minimum_image(k, kp):
     q_star = min(cand, key=lambda v: v[0]**2 + v[1]**2)
     return q_star
 
-def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
+def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
     U = sys_dict["U"]
     epsilon = sys_dict["epsilon"]
     kxlist = sys_dict["kxlist"]
     kylist = sys_dict["kylist"]
-    Qxlist = sys_dict["Qxlist"]
-    Qylist = sys_dict["Qylist"]
-    NQ = sys_dict["NQ"]
     Nk = sys_dict["Nk"]
+    #Qxlist = sys_dict["Qxlist"]
+    #Qylist = sys_dict["Qylist"]
     interaction = sys_dict["interaction"]
     c_band = sys_dict["c_band"]
     v_band = sys_dict["v_band"]
@@ -300,10 +296,15 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
                     if interaction.get("kind") == "coulomb":
                         k_vec = np.array([kxlist[kx],kylist[ky]])
                         ktag_vec = np.array([kxlist[kx_tag],kylist[ky_tag]])
-                        deltak_vec = k_minimum_image(k_vec, ktag_vec)
+                        deltak_vec = minimum_image(k_vec, ktag_vec)
                         deltak_norm  = np.linalg.norm(deltak_vec)
                         V_d = 1/(deltak_norm+epsilon)
-                        V_x = 1/(np.sqrt(pow(Qxlist[Qx_indx]+half_dQx,2)+pow(Qylist[Qy_indx]+half_dQy,2))+epsilon)
+                        if kx==kx_tag and ky==ky_tag:
+                            V_d = 0
+                        Q_vec = np.array([kxlist[Qx_indx],kylist[Qy_indx]])
+                        deltaQ_vec = minimum_image(Q_vec, np.array([0.0,0.0]))
+                        deltaQ_norm  = np.linalg.norm(deltaQ_vec)
+                        V_x = 1/(deltaQ_norm+epsilon)
                     elif interaction.get("kind") == "constant":
                         params = interaction.get("params")
                         V_d = params.get('vd')
@@ -320,10 +321,9 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,half_dQx,half_dQy):
     return H
 
 def SolveInteracting(ni_evals,ni_wf):
-    start_time = time.time()
-    NQ = sys_dict["NQ"]
-    Qxlist = sys_dict["Qxlist"]
-    Qylist = sys_dict["Qylist"]
+    NQ = sys_dict["Nk"]
+    Qxlist = sys_dict["kxlist"]
+    Qylist = sys_dict["kylist"]
     dQx = np.abs(Qxlist[1] - Qxlist[0])
     dQy = np.abs(Qylist[1] - Qylist[0])
     Nk = sys_dict["Nk"]
@@ -331,7 +331,7 @@ def SolveInteracting(ni_evals,ni_wf):
     f_matrix = np.zeros((NQ,NQ,Nk*Nk,Nk*Nk),dtype=np.complex128)
     for i in range(NQ):#Qx
         for j in range(NQ):#Qy
-            H_Q = GetH2Band(i,j,ni_wf,ni_evals,dQx/2,dQy/2)
+            H_Q = GetH2Band(i,j,ni_wf,ni_evals)
             H_Q2D = Flatten4D(H_Q)
             e_Q, f_Q = np.linalg.eigh(H_Q2D)
             # Sort the eigenvalues and reorder eigenvectors accordingly
@@ -342,7 +342,6 @@ def SolveInteracting(ni_evals,ni_wf):
             eQ_matrix[i,j]= sorted_e_Q
             f_matrix[i,j] = sorted_f_Q
     end_time = time.time()
-    print(f"time to finish {end_time - start_time}")
     return(eQ_matrix,f_matrix)
 
 
