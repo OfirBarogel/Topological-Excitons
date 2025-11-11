@@ -2,10 +2,11 @@ ver 0.1.4
 Major:
 - fixed wrong eigenenergies indexing from new config formatting (c_band, v_band)
 - got rid of need for Fslicer
-- Added minimum image to k and Q in coulomb interaction
 - redid normalization, I missed it in const and miswrote in coulomb
 - Added V_d = 0 for when it diverges
+- Q is now 1BZ (Qlist->klist)
 minor:
 - change Fslicer.sh to accept argument name of subdirectory within /Data directory
-- made sure identified points dont repeat in linspace uses
+- made sure identified points dont repeat in linspace u
 - fixed D kernel mistake
+- removed half dQ jump for coulomb interaction

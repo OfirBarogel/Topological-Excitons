@@ -18,7 +18,7 @@ import yaml
 def GetConfig(filename):
     global sys_dict
     with open(filename, 'r') as stream:
-        sys_dict = yaml.load(stream, Loader=yaml.UnsafeLoader)
+        sys_dict = yaml.load(stream)
     hc = sys_dict["hamiltonian"]
     kind = hc["kind"]
     terms: List[str] = [t for t in hc.get("terms", [])]
@@ -245,41 +245,16 @@ def SolveBzNoninteracting():
     wf_BZ = FixGauge(wf_BZ)
     return eval_BZ, wf_BZ
 
-b1 = np.array([2*np.pi, -2*np.pi/np.sqrt(3.0)])
-b2 = np.array([0.0,      4*np.pi/np.sqrt(3.0)])
-B  = np.column_stack([b1, b2])
-Binv = np.linalg.inv(B)
-
-def k_minimum_image(k, kp):
-    # 1) Fractional difference and primitive-parallelogram wrap
-    c  = Binv @ k
-    cp = Binv @ kp
-    dc = c - cp
-    dc -= np.round(dc)            # wrap to +-1/2
-
-    # 2) Candidate in the primitive cell
-    qP = B @ dc
-
-    # 3) WS refinement
-    cand = [qP,
-            qP - b1, qP + b1,
-            qP - b2, qP + b2,
-            qP - (b1 + b2), qP + (b1 + b2)]
-    q_star = min(cand, key=lambda v: v[0]**2 + v[1]**2)
-    return q_star
-
 def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
     U = sys_dict["U"]
     epsilon = sys_dict["epsilon"]
     kxlist = sys_dict["kxlist"]
     kylist = sys_dict["kylist"]
     Nk = sys_dict["Nk"]
-    #Qxlist = sys_dict["Qxlist"]
-    #Qylist = sys_dict["Qylist"]
     interaction = sys_dict["interaction"]
     c_band = sys_dict["c_band"]
     v_band = sys_dict["v_band"]
-    wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
+    wk = 2/(np.sqrt(3)*pow(Nk,2))
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
     for kx in range(Nk):
         for ky in range(Nk):
@@ -296,15 +271,14 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
                     if interaction.get("kind") == "coulomb":
                         k_vec = np.array([kxlist[kx],kylist[ky]])
                         ktag_vec = np.array([kxlist[kx_tag],kylist[ky_tag]])
-                        deltak_vec = minimum_image(k_vec, ktag_vec)
+                        deltak_vec = k_vec-ktag_vec
                         deltak_norm  = np.linalg.norm(deltak_vec)
                         V_d = 1/(deltak_norm+epsilon)
                         if kx==kx_tag and ky==ky_tag:
                             V_d = 0
                         Q_vec = np.array([kxlist[Qx_indx],kylist[Qy_indx]])
-                        deltaQ_vec = minimum_image(Q_vec, np.array([0.0,0.0]))
-                        deltaQ_norm  = np.linalg.norm(deltaQ_vec)
-                        V_x = 1/(deltaQ_norm+epsilon)
+                        Q_norm  = np.linalg.norm(Q_vec)
+                        V_x = 1/(Q_norm+epsilon)
                     elif interaction.get("kind") == "constant":
                         params = interaction.get("params")
                         V_d = params.get('vd')
@@ -319,7 +293,6 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
                     X = U*V_x*np.vdot(uc_kQ, uv_k) * np.vdot(uv_kp, uc_kpQ)
                     H[kx,ky,kx_tag,ky_tag] = e - wk*(D-X)
     return H
-
 def SolveInteracting(ni_evals,ni_wf):
     NQ = sys_dict["Nk"]
     Qxlist = sys_dict["kxlist"]
