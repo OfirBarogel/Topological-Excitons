@@ -4,7 +4,9 @@ Major:
 - got rid of need for Fslicer
 - redid normalization, I missed it in const and miswrote in coulomb
 - Added V_d = 0 for when it diverges
-- Q is now 1BZ (Qlist->klist)
+- Q is now same as kgrid size (Qlist->klist)
+- added Haldane
+- calculations now run on 2BZ kgrid because of periodicity
 minor:
 - change Fslicer.sh to accept argument name of subdirectory within /Data directory
 - made sure identified points dont repeat in linspace u

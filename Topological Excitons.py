@@ -22,7 +22,7 @@ def GetConfig(filename):
     hc = sys_dict["hamiltonian"]
     kind = hc["kind"]
     terms: List[str] = [t for t in hc.get("terms", [])]
-    if kind=='qwz':
+    if kind=='qwz' or kind == "haldane":
         sys_dict["Bands"] = 2
     elif kind == 'mos2':
         if any(t in terms for t in ["zeeman", "soc"]):
@@ -30,9 +30,11 @@ def GetConfig(filename):
         else:
             sys_dict["Bands"] = 3
     Nk = sys_dict.get("Nk")
-    sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
-    sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk, endpoint = False)
-    
+    if kind =="haldane" or kind =="mos2":
+        sys_dict["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
+        sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk, endpoint = False)
+    else:
+        raise ValueError("Couldnt parse hexagonal Hamiltonian, add new klist interpretation")
 def SaveConfig(config_file):
     keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band"]
     config = {key: sys_dict[key] for key in keys_to_save if key in sys_dict}
@@ -42,6 +44,22 @@ def ChernHamiltonian(kx,ky):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
     M = -1.1
     return np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M+np.cos(kx)+np.cos(ky))*pauli_mat[2]
+def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
+    d = np.array([
+        [-a, 0.0],
+        [ a/2.0, -np.sqrt(3)*a/2.0],
+        [ a/2.0,  np.sqrt(3)*a/2.0],
+    ])
+    b = np.vstack([d[1] - d[2] , d[2] - d[0],d[0] - d[1]])
+    k = np.array([kx, ky])
+    f = np.exp(1j * (k @ d.T)).sum()
+    cb = np.cos(k @ b.T).sum()
+    sb = np.sin(k @ b.T).sum()
+    d0 = 2.0 * t2 * np.cos(phi) * cb
+    dz = M - 2.0 * t2 * np.sin(phi) * sb
+    H = np.array([[d0 + dz, -t1 * f],
+                  [-t1 * np.conj(f), d0 - dz]], dtype=complex)
+    return H
 # 10.1103/PhysRevB.88.085433
 def TNNMoS_2Hamiltonian(kx,ky):
     hcfg   = sys_dict.get("hamiltonian", {})
@@ -175,6 +193,11 @@ def SolveH(kx,ky):
         H = TNNMoS_2Hamiltonian(kx,ky)
     elif kind == "qwz":
         H = ChernHamiltonian(kx,ky)
+    elif kind =="haldane":
+        params= sys_dict.get("hamiltonian",{}).get("params")
+        M_=params.get("M")
+        phi_ = params.get("phi")
+        H= HaldaneH(kx,ky,phi=phi_,M=M_)
     else:
         raise ValueError("Could not parse acceptable Hamiltonian")
     val,evec = np.linalg.eigh(H) #THIS LINE FUCK THIS LINE
@@ -182,67 +205,23 @@ def SolveH(kx,ky):
     sorted_val = val[sorted_indices]
     sorted_evec = evec[:, sorted_indices]
     return sorted_val,sorted_evec
-def FixGauge(wf_BZ):
-    Nk = wf_BZ.shape[0]
-    n_orb = wf_BZ.shape[2]
-    n_bands = wf_BZ.shape[3]
-    wf_fixed = np.zeros_like(wf_BZ, dtype=complex)
-    for band in range(n_bands):
-        # start with (0,0)
-        wf_fixed[0,0,:,band] = wf_BZ[0,0,:,band]
 
-        # propagate along ky (j direction)
-        for j in range(1, Nk):
-            prev = wf_fixed[0, j-1, :, band]
-            cur  = wf_BZ[0, j, :, band]
-            ov = np.vdot(prev, cur)
-            if np.abs(ov) > 1e-12:
-                phase = ov/np.abs(ov)
-            else:
-                phase = 1.0
-            wf_fixed[0, j, :, band] = cur * phase.conjugate()
-
-        # now propagate in kx (i direction)
-        for i in range(1, Nk):
-            # first element in row
-            prev = wf_fixed[i-1, 0, :, band]
-            cur  = wf_BZ[i, 0, :, band]
-            ov = np.vdot(prev, cur)
-            if np.abs(ov) > 1e-12:
-                phase = ov/np.abs(ov)
-            else:
-                phase = 1.0
-            wf_fixed[i, 0, :, band] = cur * phase.conjugate()
-
-            # then along ky in this row
-            for j in range(1, Nk):
-                prev = wf_fixed[i, j-1, :, band]
-                cur  = wf_BZ[i, j, :, band]
-                ov = np.vdot(prev, cur)
-                if np.abs(ov) > 1e-12:
-                    phase = ov/np.abs(ov)
-                else:
-                    phase = 1.0
-                wf_fixed[i, j, :, band] = cur * phase.conjugate()
-
-    return wf_fixed
 def SolveBzNoninteracting():
     kx = sys_dict["kxlist"]
     ky = sys_dict["kylist"]
     n_points = sys_dict["Nk"]
     n_bands = sys_dict["Bands"]
-    eps = sys_dict.get("epsilon")
+    #eps = sys_dict.get("epsilon")
     wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
     eval_BZ = np.zeros((n_points,n_points,n_bands))
     for i in range(n_points):
         for j in range(n_points):      
-            (val,vec)=SolveH(kx[i]+eps,ky[j]+eps)
+            (val,vec)=SolveH(kx[i],ky[j])
             #for l in range(vec.shape[1]):
             #    phase = np.angle(vec[0,l])
             #    vec = vec * np.exp(-1j*phase)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
-    wf_BZ = FixGauge(wf_BZ)
     return eval_BZ, wf_BZ
 
 def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
