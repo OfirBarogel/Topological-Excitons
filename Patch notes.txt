@@ -1,14 +1,6 @@
 ver 0.1.4
 Major:
-- fixed wrong eigenenergies indexing from new config formatting (c_band, v_band)
-- got rid of need for Fslicer
-- redid normalization, I missed it in const and miswrote in coulomb
-- Added V_d = 0 for when it diverges
-- Q is now same as kgrid size (Qlist->klist)
-- added Haldane
-- calculations now run on 2BZ kgrid because of periodicity
+- Added folders.txt containing all analyzed folders so that I may analyze data from all unanalyzed folders.
 minor:
-- change Fslicer.sh to accept argument name of subdirectory within /Data directory
-- made sure identified points dont repeat in linspace u
-- fixed D kernel mistake
-- removed half dQ jump for coulomb interaction
+- added slurm id to folder path
+- added function to copy files from folders to Images/ folder for easier gif creation

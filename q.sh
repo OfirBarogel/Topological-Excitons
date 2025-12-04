@@ -1,69 +1,49 @@
 #!/bin/bash
-
-#SBATCH --job-name=Topological-Excitons
+#SBATCH -J Topological_Excitons
+#SBATCH -A tobiasholder-users_v2
+#SBATCH -p tobiasholder-pool
+#SBATCH --qos=owner                     
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=96
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=96
+#SBATCH --mem=256G
 #SBATCH --time=48:00:00
-#SBATCH --mem=500G
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=ofirbarogel@mail.tau.ac.il
-# [ADDED] Optional: set a default/static array here, or pass --array at submission time (recommended)
-# #SBATCH --array=0-0   # <-- override at submit time with: sbatch --array=0-(N-1) run.sh
+#SBATCH -o logs/%x-%j.out
+#SBATCH -e logs/%x-%j.err
 
-# [ADDED] Resolve config list and select by array index
-CONFIGS=(configs/*.yml)
-if [[ ${#CONFIGS[@]} -eq 0 ]]; then
-  echo "No config files found at configs/*.yml"; exit 2
-fi
+set -euo pipefail
 
-# If not submitted as an array, default to the first config (useful for local tests)
-: "${SLURM_ARRAY_TASK_ID:=0}"  # [ADDED]
-CFG="${CONFIGS[$SLURM_ARRAY_TASK_ID]}"  # [ADDED]
-if [[ -z "$CFG" ]]; then
-  echo "Array index $SLURM_ARRAY_TASK_ID is out of range (have ${#CONFIGS[@]} configs)"; exit 3  # [ADDED]
-fi
-BASENAME="$(basename "$CFG" .yml)"  # [ADDED]
-
-# Go to the job's submission directory
 cd "$SLURM_SUBMIT_DIR"
+#mkdir -p logs
 
-# Ensure logs directory exists
-mkdir -p logs
+# --- pick up config path ---
+CONFIG="${1:-${CONFIG_PATH:-}}"
+if [[ -z "${CONFIG}" ]]; then
+  echo "Usage: sbatch run.sh path/to/config.yml"
+  echo "   or: CONFIG_PATH=path/to/config.yml sbatch run.sh"
+  exit 1
+fi
+if [[ ! -f "$CONFIG" ]]; then
+  echo "Config not found: $CONFIG"
+  exit 2
+fi
+BASENAME="$(basename "$CONFIG" .yml)"
 
-# [CHANGED] Custom log file: include config name + array id for uniqueness
-LOGFILE="logs/job_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${BASENAME}.log"
-exec > >(tee -a "$LOGFILE") 2>&1
+echo "Job $SLURM_JOB_ID on $(hostname) at $(date)"
+echo "Config: $CONFIG"
 
-echo "Job started on $(hostname) at $(date)"
-echo "Working directory: $PWD"
-echo "Job ID: $SLURM_JOB_ID"
-echo "Array task ID: $SLURM_ARRAY_TASK_ID"   # [ADDED]
-echo "Config: $CFG"                           # [ADDED]
-
-# Find and remove any .o<jobid> and .e<jobid> files in current directory
-for ext in o e; do
-    f=$(find . -maxdepth 1 -name "*.${ext}${SLURM_JOB_ID}" -print -quit)
-    if [[ -n "$f" && -f "$f" ]]; then
-        echo "Removing SLURM file: $f"
-        rm "$f"
-    fi
-done
-
-# Load Python module
-module load python/python-3.9.21
-
-# Fix matplotlib backend issues
+module purge
+module load python/python-anaconda3.6.5
+python -m venv venv
 export XDG_RUNTIME_DIR=/tmp/runtime-$USER
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 700 "$XDG_RUNTIME_DIR"
+mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 
-# Activate virtual environment
-source te-env/bin/activate
-
-
-# [CHANGED] Run the script with config path and outdir
-python 'Topological Excitons.py' --config "$CFG"
-echo "Job finished successfully at $(date)"
-
-# Deactivate virtual environment
+source venv/bin/activate
+#python -m pip install -r requirements.txt
+python 'Topological Excitons.py' --config "$CONFIG"
+#python 'FSlicer.py' --config "$CONFIG"
+STATUS=$?
 deactivate
+
+echo "Finished at $(date) with exit code $STATUS"
+exit $STATUS

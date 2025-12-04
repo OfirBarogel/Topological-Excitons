@@ -319,6 +319,19 @@ def SaveData(data,filename,folder):
     np.save(full_path, data)
 
 
+def slurm_tag():
+    env = os.environ
+    # Prefer array IDs (job + task), else plain job id
+    if env.get("SLURM_ARRAY_JOB_ID") and env.get("SLURM_ARRAY_TASK_ID"):
+        base = f"{env['SLURM_ARRAY_JOB_ID']}.{env['SLURM_ARRAY_TASK_ID']}"
+    elif env.get("SLURM_JOB_ID"):
+        base = env["SLURM_JOB_ID"]
+    else:
+        return None
+
+    # Optionally append step/proc for MPI steps
+    step = env.get("SLURM_STEP_ID") or env.get("SLURM_PROCID")
+    return f"slurm{base}" + (f"-s{step}" if step else "")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -328,8 +341,9 @@ if __name__ == "__main__":
     now = datetime.now()
     # Format as string
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    tag = slurm_tag()
     #directories
-    data_folder = Path(f"Data/{timestamp}")
+    data_folder = Path(f"Data/{timestamp}-{tag}")
     storage_path = Path("/tobiasholder-storage/ofirbarogel")
     data_path = storage_path / data_folder
     sub_data_path = data_path / Path(f"{timestamp}")
