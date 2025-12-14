@@ -18,7 +18,7 @@ import yaml
 def GetConfig(filename):
     global sys_dict
     with open(filename, 'r') as stream:
-        sys_dict = yaml.load(stream)
+        sys_dict = yaml.load(stream, Loader=yaml.UnsafeLoader)
     hc = sys_dict["hamiltonian"]
     kind = hc["kind"]
     terms: List[str] = [t for t in hc.get("terms", [])]
@@ -32,9 +32,12 @@ def GetConfig(filename):
     Nk = sys_dict.get("Nk")
     if kind =="haldane" or kind =="mos2":
         sys_dict["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
-        sys_dict["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk, endpoint = False)
+        sys_dict["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
+        sys_dict["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
+        sys_dict["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
     else:
         raise ValueError("Couldnt parse hexagonal Hamiltonian, add new klist interpretation")
+    #sys_dict["NQ"] = 2*Nk-1
 def SaveConfig(config_file):
     keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band"]
     config = {key: sys_dict[key] for key in keys_to_save if key in sys_dict}
@@ -185,6 +188,19 @@ def TNNMoS_2Hamiltonian(kx,ky):
         H_spinful = H_spinful + SOC_full
     return H_spinful
 
+def HexPBCAddInd(k1: tuple[int,int],k2: tuple[int,int],nk: int)-> tuple[int,int]:
+    kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
+    kx_ind %= nk
+    k_mid = nk // 2  # use integer division
+    # how many times does k_x need to wrap?
+    wraps = ky_ind // nk
+    ky_ind %= nk
+    if wraps % 2 != 0:
+        if kx_ind >= k_mid:
+            kx_ind -= k_mid
+        else:
+            kx_ind += k_mid
+    return kx_ind, ky_ind
 
 #for different Hamiltonians change first line in SolveH
 def SolveH(kx,ky):
@@ -200,7 +216,7 @@ def SolveH(kx,ky):
         H= HaldaneH(kx,ky,phi=phi_,M=M_)
     else:
         raise ValueError("Could not parse acceptable Hamiltonian")
-    val,evec = np.linalg.eigh(H) #THIS LINE FUCK THIS LINE
+    val,evec = np.linalg.eigh(H)
     sorted_indices = np.argsort(val)
     sorted_val = val[sorted_indices]
     sorted_evec = evec[:, sorted_indices]
@@ -211,15 +227,11 @@ def SolveBzNoninteracting():
     ky = sys_dict["kylist"]
     n_points = sys_dict["Nk"]
     n_bands = sys_dict["Bands"]
-    #eps = sys_dict.get("epsilon")
     wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
     eval_BZ = np.zeros((n_points,n_points,n_bands))
     for i in range(n_points):
         for j in range(n_points):      
             (val,vec)=SolveH(kx[i],ky[j])
-            #for l in range(vec.shape[1]):
-            #    phase = np.angle(vec[0,l])
-            #    vec = vec * np.exp(-1j*phase)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
     return eval_BZ, wf_BZ
@@ -229,20 +241,20 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
     epsilon = sys_dict["epsilon"]
     kxlist = sys_dict["kxlist"]
     kylist = sys_dict["kylist"]
+    Qxlist = sys_dict["Qxlist"]
+    Qylist = sys_dict["Qylist"]
     Nk = sys_dict["Nk"]
     interaction = sys_dict["interaction"]
     c_band = sys_dict["c_band"]
     v_band = sys_dict["v_band"]
-    wk = 2/(np.sqrt(3)*pow(Nk,2))
+    wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
     for kx in range(Nk):
         for ky in range(Nk):
             for kx_tag in range(Nk):
                 for ky_tag in range(Nk):
-                    kx_Qx = (kx+Qx_indx)%Nk  
-                    kx_Qx_tag = (kx_tag+Qx_indx)%Nk
-                    ky_Qy = (ky+Qy_indx)%Nk
-                    ky_Qy_tag = (ky_tag+Qy_indx)%Nk
+                    kx_Qx,ky_Qy = HexPBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk)
+                    kx_Qx_tag,ky_Qy_tag = HexPBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk)
                     if kx==kx_tag and ky==ky_tag:
                         e = ni_evals[kx_Qx][ky_Qy][c_band]- ni_evals[kx][ky][v_band]
                     else:
@@ -255,7 +267,7 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
                         V_d = 1/(deltak_norm+epsilon)
                         if kx==kx_tag and ky==ky_tag:
                             V_d = 0
-                        Q_vec = np.array([kxlist[Qx_indx],kylist[Qy_indx]])
+                        Q_vec = np.array([Qxlist[Qx_indx],Qylist[Qy_indx]])
                         Q_norm  = np.linalg.norm(Q_vec)
                         V_x = 1/(Q_norm+epsilon)
                     elif interaction.get("kind") == "constant":
@@ -273,12 +285,8 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
                     H[kx,ky,kx_tag,ky_tag] = e - wk*(D-X)
     return H
 def SolveInteracting(ni_evals,ni_wf):
-    NQ = sys_dict["Nk"]
-    Qxlist = sys_dict["kxlist"]
-    Qylist = sys_dict["kylist"]
-    dQx = np.abs(Qxlist[1] - Qxlist[0])
-    dQy = np.abs(Qylist[1] - Qylist[0])
     Nk = sys_dict["Nk"]
+    NQ = Nk
     eQ_matrix = np.zeros((NQ,NQ,Nk*Nk))
     f_matrix = np.zeros((NQ,NQ,Nk*Nk,Nk*Nk),dtype=np.complex128)
     for i in range(NQ):#Qx
@@ -286,27 +294,23 @@ def SolveInteracting(ni_evals,ni_wf):
             H_Q = GetH2Band(i,j,ni_wf,ni_evals)
             H_Q2D = Flatten4D(H_Q)
             e_Q, f_Q = np.linalg.eigh(H_Q2D)
-            # Sort the eigenvalues and reorder eigenvectors accordingly
             sorted_indices = np.argsort(e_Q)
             sorted_e_Q = e_Q[sorted_indices]
             sorted_f_Q = f_Q[:, sorted_indices]
             sorted_e_Q = np.real(sorted_e_Q)
             eQ_matrix[i,j]= sorted_e_Q
             f_matrix[i,j] = sorted_f_Q
-    end_time = time.time()
     return(eQ_matrix,f_matrix)
 
 
 def Flatten4D(array4D):
     Nk = sys_dict["Nk"]
-    imax,jmax,kmax,lmax = Nk,Nk,Nk,Nk #this can be made more generic but im trying to minmax efficiency a little bit
-    # Flatten the 4D array to a 2D array using explicit index mapping
+    imax,jmax,kmax,lmax = Nk,Nk,Nk,Nk
     array2D = np.empty((imax * jmax, kmax * lmax), dtype=complex)
     for i in range(imax):
         for j in range(jmax):
             for k in range(kmax):
                 for l in range(lmax):
-                    # Map 4D indices to 2D indices
                     row = i * jmax + j
                     col = k * lmax + l
                     array2D[row, col] = array4D[i, j, k, l]
@@ -338,9 +342,9 @@ if __name__ == "__main__":
     ap.add_argument("--config", required=True, help="Path to config.yml")
     args = ap.parse_args()
     GetConfig(args.config)
-    now = datetime.now()
+    start = datetime.now()
     # Format as string
-    timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
     tag = slurm_tag()
     #directories
     data_folder = Path(f"Data/{timestamp}-{tag}")
