@@ -1,6 +1,8 @@
 ver 0.1.4
 Major:
 - Added folders.txt containing all analyzed folders so that I may analyze data from all unanalyzed folders.
+- Changed to 1BZ k and 2BZ Q with PBC of rectangularly parametrized BZ
+- Fixed graph rotation by 90 deg
 minor:
 - added slurm id to folder path
 - added function to copy files from folders to Images/ folder for easier gif creation

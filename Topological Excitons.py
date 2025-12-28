@@ -14,11 +14,11 @@ import re
 import argparse
 from datetime import datetime
 import yaml
-#ver 0.1.3
+#ver 0.1.4
 def GetConfig(filename):
     global sys_dict
     with open(filename, 'r') as stream:
-        sys_dict = yaml.load(stream, Loader=yaml.UnsafeLoader)
+        sys_dict = yaml.load(stream)
     hc = sys_dict["hamiltonian"]
     kind = hc["kind"]
     terms: List[str] = [t for t in hc.get("terms", [])]
@@ -188,7 +188,7 @@ def TNNMoS_2Hamiltonian(kx,ky):
         H_spinful = H_spinful + SOC_full
     return H_spinful
 
-def HexPBCAddInd(k1: tuple[int,int],k2: tuple[int,int],nk: int)-> tuple[int,int]:
+def HexPBCAddInd(k1,k2,nk):
     kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
     kx_ind %= nk
     k_mid = nk // 2  # use integer division
@@ -359,6 +359,9 @@ if __name__ == "__main__":
     eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
     integrated_f = np.sum(f_matrix,axis=2)
     F0 = f_matrix[:,:,:,0]
+    end = datetime.now()
+    elapsed = end-start
+    print("Runtime: ",elapsed)
     #Savedata
     SaveData(integrated_f,"Integrated_Fs", sub_data_path) #[NQ,NQ,Nk*Nk]
     SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
