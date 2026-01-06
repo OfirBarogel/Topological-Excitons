@@ -1,0 +1,376 @@
+import numpy as np
+import time
+import os
+from pathlib import Path
+import argparse
+from datetime import datetime
+import yaml
+import ExcitonWF
+#ver 0.1.4
+def GetConfig(filename):
+    global sys_dict
+    with open(filename, 'r') as stream:
+        sys_dict = yaml.load(stream)
+    hc = sys_dict["hamiltonian"]
+    kind = hc["kind"]
+    terms: List[str] = [t for t in hc.get("terms", [])]
+    if kind=='qwz' or kind == "haldane":
+        sys_dict["Bands"] = 2
+    elif kind == 'mos2':
+        if any(t in terms for t in ["zeeman", "soc"]):
+            sys_dict["Bands"] = 6
+        else:
+            sys_dict["Bands"] = 3
+    Nk = sys_dict.get("Nk")
+    if kind =="haldane" or kind =="mos2":
+        sys_dict["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
+        sys_dict["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
+        sys_dict["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
+        sys_dict["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
+    else:
+        raise ValueError("Couldnt parse hexagonal Hamiltonian, add new klist interpretation")
+    #sys_dict["NQ"] = 2*Nk-1
+def SaveConfig(config_file):
+    keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
+    config = {key: sys_dict.get(key) for key in keys_to_save if key in sys_dict}
+    with open(config_file, 'w') as outfile:
+        yaml.dump(config, outfile, default_flow_style=False)
+def ChernHamiltonian(kx,ky):
+    pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
+    M = -1.1
+    return np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M+np.cos(kx)+np.cos(ky))*pauli_mat[2]
+def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
+    d = np.array([
+        [-a, 0.0],
+        [ a/2.0, -np.sqrt(3)*a/2.0],
+        [ a/2.0,  np.sqrt(3)*a/2.0],
+    ])
+    b = np.vstack([d[1] - d[2] , d[2] - d[0],d[0] - d[1]])
+    k = np.array([kx, ky])
+    f = np.exp(1j * (k @ d.T)).sum()
+    cb = np.cos(k @ b.T).sum()
+    sb = np.sin(k @ b.T).sum()
+    d0 = 2.0 * t2 * np.cos(phi) * cb
+    dz = M - 2.0 * t2 * np.sin(phi) * sb
+    H = np.array([[d0 + dz, -t1 * f],
+                  [-t1 * np.conj(f), d0 - dz]], dtype=complex)
+    return H
+# 10.1103/PhysRevB.88.085433
+def TNNMoS_2Hamiltonian(kx,ky):
+    hcfg   = sys_dict.get("hamiltonian", {})
+    terms  = set(map(str.lower, hcfg.get("terms", [])))
+    params = hcfg.get("params", {})
+    has_soc    = "soc" in terms
+    has_zeeman = "zeeman" in terms
+    alpha =0.5*kx
+    beta = (np.sqrt(3)/2)*ky
+    epsilon1 =0.683
+    epsilon2 =1.707
+    t0 = -0.146
+    t1 = -0.114
+    t2 = 0.506
+    t11 = 0.085
+    t12 = 0.162
+    t22 = 0.073
+    r0 = 0.060
+    r1 = -0.236
+    r2 = 0.067
+    r11 = 0.016
+    r12 = 0.087
+    u0 = -0.038
+    u1 = 0.046
+    u2 = 0.001
+    u11 = 0.266
+    u12 = -0.176
+    u22 = -0.150
+    if "modified" in terms:
+        delta = params.get("modified").get("delta",0.0)
+    else:
+        delta = 0.0
+    h0 = (epsilon1 +
+          2 * t0 * (2 * np.cos(alpha) * np.cos(beta) + np.cos(2 * alpha)) +
+          2 * r0 * (2 * np.cos(3 * alpha) * np.cos(beta) + np.cos(2 * beta)) +
+          2 * u0 * (2 * np.cos(2 * alpha) * np.cos(2 * beta) + np.cos(4 * alpha)))
+
+    h1_real = (-2 * np.sqrt(3) * t2 * np.sin(alpha) * np.sin(beta) +
+               2 * (r1 + r2) * np.sin(3 * alpha) * np.sin(beta) -
+               2 * np.sqrt(3) * u2 * np.sin(2 * alpha) * np.sin(2 * beta))
+
+    h1_imag = (2 * t1 * np.sin(alpha) * (2 * np.cos(alpha) + np.cos(beta)) +
+               2 * (r1 - r2) * np.sin(3 * alpha) * np.cos(beta) +
+               2 * u1 * np.sin(2 * alpha) * (2 * np.cos(2 * alpha) + np.cos(2 * beta)))
+
+    h1 = h1_real + 1j * h1_imag
+
+    h2_real = (2 * t2 * (np.cos(2 * alpha) - np.cos(alpha) * np.cos(beta)) -
+               (2 / np.sqrt(3)) * (r1 + r2) * (np.cos(3 * alpha) * np.cos(beta) - np.cos(2 * beta)) +
+               2 * u2 * (np.cos(4 * alpha) - np.cos(2 * alpha) * np.cos(2 * beta)))
+
+    h2_imag = (2 * np.sqrt(3) * t1 * np.cos(alpha) * np.sin(beta) +
+               (2 / np.sqrt(3)) * np.sin(beta) * (r1 - r2) * (np.cos(3 * alpha) + 2 * np.cos(beta)) +
+               2 * np.sqrt(3) * u1 * np.cos(2 * alpha) * np.sin(2 * beta))
+
+    h2 = h2_real + 1j * h2_imag
+
+    h11 = (epsilon2 +
+           (t11 + 3 * t22) * np.cos(alpha) * np.cos(beta) +
+           2 * t11 * np.cos(2 * alpha) +
+           4 * r11 * np.cos(3 * alpha) * np.cos(beta) +
+           2 * (r11 + np.sqrt(3) * r12) * np.cos(2 * beta) +
+           (u11 + 3 * u22) * np.cos(2 * alpha) * np.cos(2 * beta) +
+           2 * u11 * np.cos(4 * alpha)+delta)
+
+    h12_real = (np.sqrt(3) * (t22 - t11) * np.sin(alpha) * np.sin(beta) +
+                4 * r12 * np.sin(3 * alpha) * np.sin(beta) +
+                np.sqrt(3) * (u22 - u11) * np.sin(2 * alpha) * np.sin(2 * beta))
+
+    h12_imag = (4 * t12 * np.sin(alpha) * (np.cos(alpha) - np.cos(beta)) +
+                4 * u12 * np.sin(2 * alpha) * (np.cos(2 * alpha) - np.cos(2 * beta)))
+
+    h12 = h12_real + 1j * h12_imag
+
+    h22 = (epsilon2 + 
+           (3 * t11 + t22) * np.cos(alpha) * np.cos(beta) +
+           2 * t22 * np.cos(2 * alpha) +
+           2 * r11 * (2 * np.cos(3 * alpha) * np.cos(beta) + np.cos(2 * beta)) +
+           (2 / np.sqrt(3)) * r12 * (4 * np.cos(3 * alpha) * np.cos(beta) - np.cos(2 * beta)) +
+           (3 * u11 + u22) * np.cos(2 * alpha) * np.cos(2 * beta) +
+           2 * u22 * np.cos(4 * alpha)-delta)
+
+    # Construct the Hamiltonian matrix
+    H_0 = np.array([
+        [h0, h1, h2],
+        [np.conj(h1), h11, h12],
+        [np.conj(h2), np.conj(h12), h22]
+    ])
+    if not has_soc and not has_zeeman:
+        return H_0
+    sx = np.array([[0., 1.],
+                   [1., 0. ]], dtype=complex)
+    sy = np.array([[0., -1j],
+                   [1j,  0. ]], dtype=complex)
+    sz = np.array([[1., 0. ],
+                   [0., -1.]], dtype=complex)
+
+    # Base in spinful space: diag(H0, H0)  (6x6)
+    H_spinful = np.block([
+        [H_0,               np.zeros_like(H_0)],
+        [np.zeros_like(H_0), H_0             ]
+    ])
+    if has_zeeman:
+        B = np.array(params.get("zeeman", {}).get("B", [0.0, 0.0, 0.0]), dtype=float)
+        if B.shape != (3,):
+            raise ValueError("Zeeman.B must be a length-3 array/list [Bx, By, Bz].")
+        H_spin = B[0]*sx + B[1]*sy + B[2]*sz           # 2x2
+        H_zeeman = np.kron(np.eye(3, dtype=complex), H_spin)  # 6x6
+        H_spinful = H_spinful + H_zeeman
+    if has_soc:
+        # lambda_soc from config if present; fallback to 0.073
+        lambda_soc = params.get("soc", {}).get("strength", 0.073)
+        Lz = np.array([[0,  0,   0 ],
+                       [0,  0,  2j ],
+                       [0, -2j,  0 ]], dtype=complex)
+
+        SOC_block = (lambda_soc / 2.0) * Lz  # 3x3
+        # Expand to spin basis: +SOC on ↑, -SOC on ↓
+        SOC_full = np.block([
+            [ SOC_block,               np.zeros_like(SOC_block)],
+            [ np.zeros_like(SOC_block), -SOC_block            ]
+        ])
+        H_spinful = H_spinful + SOC_full
+    return H_spinful
+
+def HexPBCAddInd(k1,k2,nk):
+    kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
+    kx_ind %= nk
+    k_mid = nk // 2  # use integer division
+    # how many times does k_x need to wrap?
+    wraps = ky_ind // nk
+    ky_ind %= nk
+    if wraps % 2 != 0:
+        if kx_ind >= k_mid:
+            kx_ind -= k_mid
+        else:
+            kx_ind += k_mid
+    return kx_ind, ky_ind
+
+#for different Hamiltonians change first line in SolveH
+def SolveH(kx,ky):
+    kind = sys_dict.get("hamiltonian", {}).get("kind",None)
+    if kind == "mos2":
+        H = TNNMoS_2Hamiltonian(kx,ky)
+    elif kind == "qwz":
+        H = ChernHamiltonian(kx,ky)
+    elif kind =="haldane":
+        params= sys_dict.get("hamiltonian",{}).get("params")
+        M_=params.get("M")
+        phi_ = params.get("phi")
+        H= HaldaneH(kx,ky,phi=phi_,M=M_)
+    else:
+        raise ValueError("Could not parse acceptable Hamiltonian")
+    val,evec = np.linalg.eigh(H)
+    sorted_indices = np.argsort(val)
+    sorted_val = val[sorted_indices]
+    sorted_evec = evec[:, sorted_indices]
+    return sorted_val,sorted_evec
+
+def SolveBzNoninteracting():
+    epsx_factor = sys_dict.get("epsx",0)
+    epsy_factor = sys_dict.get("epsy",0)
+    kx = sys_dict["kxlist"]
+    ky = sys_dict["kylist"]
+    epsx = kx[1]*epsx_factor
+    epsy = ky[1]*epsy_factor
+    n_points = sys_dict["Nk"]
+    n_bands = sys_dict["Bands"]
+    wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
+    eval_BZ = np.zeros((n_points,n_points,n_bands))
+    for i in range(n_points):
+        for j in range(n_points):      
+            (val,vec)=SolveH(kx[i]+epsx,ky[j]+epsy) #ADDED epsilon shift to avoid zeros!
+            eval_BZ[i,j] = val
+            wf_BZ[i,j] = vec
+    return eval_BZ, wf_BZ
+
+def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
+    U = sys_dict["U"]
+    epsilon = sys_dict["epsilon"]
+    kxlist = sys_dict["kxlist"]
+    kylist = sys_dict["kylist"]
+    Qxlist = sys_dict["Qxlist"]
+    Qylist = sys_dict["Qylist"]
+    Nk = sys_dict["Nk"]
+    interaction = sys_dict["interaction"]
+    c_band = sys_dict["c_band"]
+    v_band = sys_dict["v_band"]
+    wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
+    H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
+    for kx in range(Nk):
+        for ky in range(Nk):
+            for kx_tag in range(Nk):
+                for ky_tag in range(Nk):
+                    kx_Qx,ky_Qy = HexPBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk)
+                    kx_Qx_tag,ky_Qy_tag = HexPBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk)
+                    if kx==kx_tag and ky==ky_tag:
+                        e = ni_evals[kx_Qx][ky_Qy][c_band]- ni_evals[kx][ky][v_band]
+                    else:
+                        e = 0
+                    if interaction.get("kind") == "coulomb":
+                        k_vec = np.array([kxlist[kx],kylist[ky]])
+                        ktag_vec = np.array([kxlist[kx_tag],kylist[ky_tag]])
+                        deltak_vec = k_vec-ktag_vec
+                        deltak_norm  = np.linalg.norm(deltak_vec)
+                        V_d = 1/(deltak_norm+epsilon)
+                        if kx==kx_tag and ky==ky_tag:
+                            V_d = 0
+                        Q_vec = np.array([Qxlist[Qx_indx],Qylist[Qy_indx]])
+                        Q_norm  = np.linalg.norm(Q_vec)
+                        V_x = 1/(Q_norm+epsilon)
+                    elif interaction.get("kind") == "constant":
+                        params = interaction.get("params")
+                        V_d = params.get('vd')
+                        V_x = params.get('vx')
+                    else:
+                        raise ValueError("Could not parse acceptable interaction kind")
+                    uc_kQ   = wf_ni[kx_Qx,ky_Qy,:,c_band]
+                    uc_kpQ  = wf_ni[kx_Qx_tag,ky_Qy_tag,:,c_band]
+                    uv_k    = wf_ni[kx,ky,:,v_band]
+                    uv_kp   = wf_ni[kx_tag,ky_tag,:,v_band]
+                    D = U*V_d*np.vdot(uc_kQ, uc_kpQ) * np.vdot(uv_kp, uv_k)
+                    X = U*V_x*np.vdot(uc_kQ, uv_k) * np.vdot(uv_kp, uc_kpQ)
+                    H[kx,ky,kx_tag,ky_tag] = e - wk*(D-X)
+    return H
+
+def SolveInteracting(ni_evals,ni_wf):
+    Nk = sys_dict["Nk"]
+    NQ = Nk
+    eQ_matrix = np.zeros((NQ,NQ,Nk*Nk))
+    f_matrix = np.zeros((NQ,NQ,Nk*Nk,Nk*Nk),dtype=np.complex128)
+    for i in range(NQ):#Qx
+        for j in range(NQ):#Qy
+            H_Q = GetH2Band(i,j,ni_wf,ni_evals)
+            s = H_Q.shape
+            H_Q2D = H_Q.reshape(s[0]*s[1], s[2]*s[3])
+            e_Q, f_Q = np.linalg.eigh(H_Q2D)
+            sorted_indices = np.argsort(e_Q)
+            sorted_e_Q = e_Q[sorted_indices]
+            sorted_f_Q = f_Q[:, sorted_indices]
+            sorted_e_Q = np.real(sorted_e_Q)
+            eQ_matrix[i,j]= sorted_e_Q
+            f_matrix[i,j] = sorted_f_Q
+    return(eQ_matrix,f_matrix)
+    
+def SaveData(data,filename,folder):
+    if not filename.endswith('.npy'):
+        filename += '.npy'
+    full_path = folder / filename
+    np.save(full_path, data)
+
+
+def slurm_tag():
+    env = os.environ
+    # Prefer array IDs (job + task), else plain job id
+    if env.get("SLURM_ARRAY_JOB_ID") and env.get("SLURM_ARRAY_TASK_ID"):
+        base = f"{env['SLURM_ARRAY_JOB_ID']}.{env['SLURM_ARRAY_TASK_ID']}"
+    elif env.get("SLURM_JOB_ID"):
+        base = env["SLURM_JOB_ID"]
+    else:
+        return None
+
+    # Optionally append step/proc for MPI steps
+    step = env.get("SLURM_STEP_ID") or env.get("SLURM_PROCID")
+    return f"slurm{base}" + (f"-s{step}" if step else "")
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True, help="Path to config.yml")
+    args = ap.parse_args()
+    GetConfig(args.config)
+    start = datetime.now()
+    # Format as string
+    timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
+    tag = slurm_tag()
+    #directories
+    data_folder = Path(f"Data/{timestamp}-{tag}")
+    storage_path = Path("/tobiasholder-storage/ofirbarogel")
+    data_path = storage_path / data_folder
+    sub_data_path = data_path / Path(f"{timestamp}")
+    os.makedirs(data_path, exist_ok=True)
+    os.makedirs(sub_data_path, exist_ok=True)
+    config_file = sub_data_path / "config.yml"
+    SaveConfig(config_file)
+    ni_evals,ni_wf = SolveBzNoninteracting()
+    
+    #Test 1:
+    norms = np.linalg.norm(ni_wf, axis=2)
+    tol = 1e-8  # adjust if needed (e.g., 1e-8 for complex64)
+    max_dev = np.max(np.abs(norms - 1.0))
+    bad = np.argwhere(np.abs(norms - 1.0) > tol)
+
+    print("max deviation from 1:", max_dev)
+    print("num bad vectors:", len(bad))
+
+    # show a few failing indices (i, j, band)
+    print("first few bad:", bad[:10])
+    
+    eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
+    
+    #Test 2:
+    norms = np.linalg.norm(f_matrix.reshape(-1, f_matrix.shape[-1]), axis=0)
+    print("Test2:", {norms})
+    
+    #integrated_f = np.sum(f_matrix,axis=2)
+    SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
+    for n in range(sys_dict.get("n_Fs",0)):
+        Fn = f_matrix[:, :, :, n]
+        v= sys_dict.get("v_band")
+        c = sys_dict.get("c_band")
+        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c)
+        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c)
+        SaveData(Fn, f"F[{n}]",sub_data_path)
+        SaveData(UnBC, f"U[{n}]BC_C_{Cn}",sub_data_path)
+        SaveData(UnProb, f"U[{n}]_Prob",sub_data_path)
+    SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
+    end = datetime.now()
+    elapsed = end-start
+    (data_path / "Runtime.txt").write_text(f"{elapsed}\n")
