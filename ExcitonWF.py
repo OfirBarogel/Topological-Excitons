@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse
 import Topological_Excitons as TE
 
-def ExcitonVProd(Q,Qp,F_ij,ni_wf,v,c):
+def ExcitonVProd(Q,Qp,F_ij,ni_wf,v,c,htype):
     #Q and Q' are tuples of Q indices, F_ij is F[Qx,Qy,k_ij] k_ij is the reshaped index
     Nk = ni_wf.shape[0]
     NQ = F_ij.shape[0]
@@ -11,50 +11,51 @@ def ExcitonVProd(Q,Qp,F_ij,ni_wf,v,c):
     val=0
     for kx in range(Nk):
         for ky in range(Nk):
-            kxQ,kyQ = TE.HexPBCAddInd((kx,ky),(2*Q[0],2*Q[1]),Nk) #k_c = k+Q
-            px,py = TE.HexPBCAddInd((kx,ky),Q,Nk) #p=k+Q/2
+            kxQ,kyQ = TE.PBCAddInd((kx,ky),(2*Q[0],2*Q[1]),Nk,htype) #k_c = k+Q
+            px,py = TE.PBCAddInd((kx,ky),Q,Nk,htype) #p=k+Q/2
             Fp = F[Q[0],Q[1],px,py]
             u_v = ni_wf[kx,ky,:,v]
             u_c = ni_wf[kxQ,kyQ,:,c] #kx,ky,orbital weight, band
             for kxp in range(Nk):
                 for kyp in range(Nk):
-                    kxQp,kyQp = TE.HexPBCAddInd((kxp,kyp),(2*Qp[0],2*Qp[1]),Nk) #k_c = k+Q
-                    pxp,pyp = TE.HexPBCAddInd((kxp,kyp),Qp,Nk) #p=k+Q/2
+                    kxQp,kyQp = TE.PBCAddInd((kxp,kyp),(2*Qp[0],2*Qp[1]),Nk,htype) #k_c = k+Q
+                    pxp,pyp = TE.PBCAddInd((kxp,kyp),Qp,Nk,htype) #p=k+Q/2
                     Fpp = F[Qp[0],Qp[1],pxp,pyp]
                     u_vp = ni_wf[kxp,kyp,:,v]
                     u_cp = ni_wf[kxQp,kyQp,:,c] #kx,ky,orbital weight, band
                     val+= np.vdot(Fpp,Fp)*np.vdot(u_cp,u_c)*np.vdot(u_v,u_vp)
     return val
 
-def GetExcitonBC(F_ij, ni_wf,v,c):
+def GetExcitonBC(F_ij, ni_wf,v,c,htype):
     N = F_ij.shape[0] #assumes F_ij.shape[N,N,:]
     link_x=np.zeros([N,N], dtype="complex")
     link_y=np.zeros([N,N], dtype="complex")
-    BC=np.zeros([N,N], dtype="complex")
+    BC=np.zeros([N,N], dtype="float")
     for i in range(N):
         for j in range(N):
-            iL,jL = TE.HexPBCAddInd((i,j),(-1,0),N) #PBCAddInd, TE.HexPBCAddInd
-            iD,jD = TE.HexPBCAddInd((i,j),(0,-1),N)
-            num = ExcitonVProd((i,j),(iL,jL),F_ij,ni_wf,v,c)
+            iL,jL = TE.PBCAddInd((i,j),(-1,0),N,htype)
+            iD,jD = TE.PBCAddInd((i,j),(0,-1),N,htype)
+            num = ExcitonVProd((i,j),(iL,jL),F_ij,ni_wf,v,c,htype)
             link_x[i, j] = num / np.abs(num)
-            num = ExcitonVProd((i,j),(iD,jD),F_ij,ni_wf,v,c)
+            num = ExcitonVProd((i,j),(iD,jD),F_ij,ni_wf,v,c,htype)
             link_y[i, j] = num / np.abs(num)
     for i in range(N):
         for j in range(N):
-            iL,jL = TE.HexPBCAddInd((i,j),(-1,0),N)
-            iD,jD = TE.HexPBCAddInd((i,j),(0,-1),N)
-            val = np.log(link_x[i,j]*link_y[iL,jL]/(link_x[iD,jD]*link_y[i,j]))
+            iL,jL = TE.PBCAddInd((i,j),(-1,0),N,htype)
+            iD,jD = TE.PBCAddInd((i,j),(0,-1),N,htype)
+            val = np.imag(np.log(link_x[i,j]*link_y[iL,jL]/(link_x[iD,jD]*link_y[i,j])))
             BC[i,j] = val
-    C=np.sum(BC)/(2*1j*np.pi)
+    C=np.sum(BC)/(2*np.pi)
     return BC,C
 
-def GetExcitonProbability(F_ij,ni_wf,v,c):
+def GetExcitonProbability(F_ij,ni_wf,v,c,htype):
     N = F_ij.shape[0]
-    P = np.zeros([N,N],dtype = float)
+    P = np.zeros([N,N],dtype = 'f')
     for i in range(N):
         for j in range(N):
-            P[i,j] = ExcitonVProd((i,j),(i,j),F_ij,ni_wf,v,c)
+            P[i,j] = ExcitonVProd((i,j),(i,j),F_ij,ni_wf,v,c,htype)
     return P
+    
 def SaveData(data,filename,folder):
     if not filename.endswith('.npy'):
         filename += '.npy'

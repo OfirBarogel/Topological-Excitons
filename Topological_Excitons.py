@@ -27,17 +27,24 @@ def GetConfig(filename):
         sys_dict["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
         sys_dict["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
         sys_dict["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
+    elif kind == 'qwz':
+        sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
+        sys_dict["kylist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
+        sys_dict["Qxlist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
+        sys_dict["Qylist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
     else:
-        raise ValueError("Couldnt parse hexagonal Hamiltonian, add new klist interpretation")
-    #sys_dict["NQ"] = 2*Nk-1
+        raise ValueError("Couldnt parse Hamiltonian, add new klist interpretation")
+
+#for the py file
 def SaveConfig(config_file):
     keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
     config = {key: sys_dict.get(key) for key in keys_to_save if key in sys_dict}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
-def ChernHamiltonian(kx,ky):
+
+def QWZHamiltonian(kx,ky):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
-    M = -1.1
+    M = sys_dict.get("hamiltonian").get("params").get("M")
     return np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M+np.cos(kx)+np.cos(ky))*pauli_mat[2]
 def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
     d = np.array([
@@ -193,19 +200,32 @@ def HexPBCAddInd(k1,k2,nk):
         else:
             kx_ind += k_mid
     return kx_ind, ky_ind
+def SquarePBCAddInd(idx, delta, N):
+    i, j   = idx
+    di, dj = delta
+    return ((i + di) % N, (j + dj) % N)
 
+def PBCAddInd(k1,k2,nk,htype):
+    #htype = sys_dict.get("hamiltonian").get("kind")
+    if htype =="haldane" or htype =="mos2":
+        return HexPBCAddInd(k1,k2,nk)
+    elif htype == "qwz":
+        return SquarePBCAddInd(k1,k2,nk)
+    else:
+        raise Exception("PBC type not configured for this hamiltonian")
+        
 #for different Hamiltonians change first line in SolveH
 def SolveH(kx,ky):
     kind = sys_dict.get("hamiltonian", {}).get("kind",None)
     if kind == "mos2":
         H = TNNMoS_2Hamiltonian(kx,ky)
     elif kind == "qwz":
-        H = ChernHamiltonian(kx,ky)
+        H = QWZHamiltonian(kx,ky)
     elif kind =="haldane":
         params= sys_dict.get("hamiltonian",{}).get("params")
         M_=params.get("M")
         phi_ = params.get("phi")
-        H= HaldaneH(kx,ky,phi=phi_,M=M_)
+        H = HaldaneH(kx,ky,phi=phi_,M=M_)
     else:
         raise ValueError("Could not parse acceptable Hamiltonian")
     val,evec = np.linalg.eigh(H)
@@ -243,14 +263,15 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
     interaction = sys_dict["interaction"]
     c_band = sys_dict["c_band"]
     v_band = sys_dict["v_band"]
+    htype = sys_dict.get("hamiltonian").get("kind")
     wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
     for kx in range(Nk):
         for ky in range(Nk):
             for kx_tag in range(Nk):
                 for ky_tag in range(Nk):
-                    kx_Qx,ky_Qy = HexPBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk)
-                    kx_Qx_tag,ky_Qy_tag = HexPBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk)
+                    kx_Qx,ky_Qy = PBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk,htype)
+                    kx_Qx_tag,ky_Qy_tag = PBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk,htype)
                     if kx==kx_tag and ky==ky_tag:
                         e = ni_evals[kx_Qx][ky_Qy][c_band]- ni_evals[kx][ky][v_band]
                     else:
@@ -342,35 +363,36 @@ if __name__ == "__main__":
     ni_evals,ni_wf = SolveBzNoninteracting()
     
     #Test 1:
-    norms = np.linalg.norm(ni_wf, axis=2)
-    tol = 1e-8  # adjust if needed (e.g., 1e-8 for complex64)
-    max_dev = np.max(np.abs(norms - 1.0))
-    bad = np.argwhere(np.abs(norms - 1.0) > tol)
-
-    print("max deviation from 1:", max_dev)
-    print("num bad vectors:", len(bad))
-
-    # show a few failing indices (i, j, band)
-    print("first few bad:", bad[:10])
+    #norms = np.linalg.norm(ni_wf, axis=2)
+    #tol = 1e-8  # adjust if needed (e.g., 1e-8 for complex64)
+    #max_dev = np.max(np.abs(norms - 1.0))
+    #bad = np.argwhere(np.abs(norms - 1.0) > tol)
+#
+    #print("max deviation from 1:", max_dev)
+    #print("num bad vectors:", len(bad))
+#
+    ## show a few failing indices (i, j, band)
+    #print("first few bad:", bad[:10])
     
     eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
     
-    #Test 2:
-    norms = np.linalg.norm(f_matrix.reshape(-1, f_matrix.shape[-1]), axis=0)
-    print("Test2:", {norms})
+    #Test 2: Throws error TypeError: unhashable type: 'numpy.ndarray'
+    #norms = np.linalg.norm(f_matrix.reshape(-1, f_matrix.shape[-1]), axis=0)
+    #print("Test2:", {norms})
     
     #integrated_f = np.sum(f_matrix,axis=2)
     SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
+    SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
+    htype = sys_dict.get("hamiltonian").get("kind")
     for n in range(sys_dict.get("n_Fs",0)):
         Fn = f_matrix[:, :, :, n]
         v= sys_dict.get("v_band")
         c = sys_dict.get("c_band")
-        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c)
-        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c)
+        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c,htype)
+        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c,htype)
         SaveData(Fn, f"F[{n}]",sub_data_path)
         SaveData(UnBC, f"U[{n}]BC_C_{Cn}",sub_data_path)
         SaveData(UnProb, f"U[{n}]_Prob",sub_data_path)
-    SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
     end = datetime.now()
     elapsed = end-start
     (data_path / "Runtime.txt").write_text(f"{elapsed}\n")
