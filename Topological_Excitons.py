@@ -8,44 +8,52 @@ import yaml
 import ExcitonWF
 #ver 0.1.4
 def GetConfig(filename):
-    global sys_dict
     with open(filename, 'r') as stream:
-        sys_dict = yaml.load(stream)
-    hc = sys_dict["hamiltonian"]
-    kind = hc["kind"]
+        cfg = yaml.load(stream)
+    hc = cfg["hamiltonian"]
+    hkind = hc["kind"]
+    if hkind == "haldane" or hkind == "mos2":
+        ltype =  "hexagonal"
+    elif hkind == "qwz":
+        ltype = "square"
+    else:
+        raise ValueError(f"Lattice type not configured: \"{hkind}\"")
+    hc["lattice"] = ltype
     terms: List[str] = [t for t in hc.get("terms", [])]
-    if kind=='qwz' or kind == "haldane":
-        sys_dict["Bands"] = 2
-    elif kind == 'mos2':
+    if hkind=='qwz' or hkind == "haldane":
+        cfg["Bands"] = 2
+    elif hkind == 'mos2':
         if any(t in terms for t in ["zeeman", "soc"]):
-            sys_dict["Bands"] = 6
+            cfg["Bands"] = 6
         else:
-            sys_dict["Bands"] = 3
-    Nk = sys_dict.get("Nk")
-    if kind =="haldane" or kind =="mos2":
-        sys_dict["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
-        sys_dict["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
-        sys_dict["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
-        sys_dict["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
-    elif kind == 'qwz':
-        sys_dict["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
-        sys_dict["kylist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
-        sys_dict["Qxlist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
-        sys_dict["Qylist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
+            cfg["Bands"] = 3
+    Nk = cfg.get("Nk")
+    if ltype == "hexagonal":
+        cfg["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
+        cfg["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
+        cfg["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
+        cfg["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
+    elif ltype == 'square':
+        cfg["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
+        cfg["kylist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
+        cfg["Qxlist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
+        cfg["Qylist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
     else:
         raise ValueError("Couldnt parse Hamiltonian, add new klist interpretation")
+    return cfg
 
 #for the py file
-def SaveConfig(config_file):
+def SaveConfig(config_file,cfg):
     keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
-    config = {key: sys_dict.get(key) for key in keys_to_save if key in sys_dict}
+    config = {key: cfg.get(key) for key in keys_to_save if key in cfg}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
 
-def QWZHamiltonian(kx,ky):
+
+def QWZHamiltonian(kx,ky,M):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
-    M = sys_dict.get("hamiltonian").get("params").get("M")
     return np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M+np.cos(kx)+np.cos(ky))*pauli_mat[2]
+
 def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
     d = np.array([
         [-a, 0.0],
@@ -63,9 +71,7 @@ def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
                   [-t1 * np.conj(f), d0 - dz]], dtype=complex)
     return H
 # 10.1103/PhysRevB.88.085433
-def TNNMoS_2Hamiltonian(kx,ky):
-    hcfg   = sys_dict.get("hamiltonian", {})
-    terms  = set(map(str.lower, hcfg.get("terms", [])))
+def TNNMoS_2Hamiltonian(kx,ky,terms,params):
     params = hcfg.get("params", {})
     has_soc    = "soc" in terms
     has_zeeman = "zeeman" in terms
@@ -187,7 +193,7 @@ def TNNMoS_2Hamiltonian(kx,ky):
         H_spinful = H_spinful + SOC_full
     return H_spinful
 
-def HexPBCAddInd(k1,k2,nk):
+def HexPBCAddInd(k1: tuple[int,int],k2: tuple[int,int],nk: int)-> tuple[int,int]:
     kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
     kx_ind %= nk
     k_mid = nk // 2  # use integer division
@@ -204,25 +210,26 @@ def SquarePBCAddInd(idx, delta, N):
     i, j   = idx
     di, dj = delta
     return ((i + di) % N, (j + dj) % N)
-
-def PBCAddInd(k1,k2,nk,htype):
-    #htype = sys_dict.get("hamiltonian").get("kind")
-    if htype =="haldane" or htype =="mos2":
+def PBCAddInd(k1,k2,nk,ltype):
+    if ltype== "hexagonal":
         return HexPBCAddInd(k1,k2,nk)
-    elif htype == "qwz":
+    elif ltype == "square":
         return SquarePBCAddInd(k1,k2,nk)
     else:
-        raise Exception("PBC type not configured for this hamiltonian")
+        raise Exception(f"PBC type not configured for this lattice \"{ltype}\"")
         
 #for different Hamiltonians change first line in SolveH
-def SolveH(kx,ky):
-    kind = sys_dict.get("hamiltonian", {}).get("kind",None)
+def SolveH(kx,ky,hcfg):
+    kind = hcfg.get("kind",None)
     if kind == "mos2":
-        H = TNNMoS_2Hamiltonian(kx,ky)
+        params = hcfg["params"]
+        terms = set(map(str.lower, hcfg.get("terms", [])))
+        H = TNNMoS_2Hamiltonian(kx,ky,terms,params)
     elif kind == "qwz":
-        H = QWZHamiltonian(kx,ky)
+        M = hcfg.get("params").get("M")
+        H = QWZHamiltonian(kx,ky,M)
     elif kind =="haldane":
-        params= sys_dict.get("hamiltonian",{}).get("params")
+        params= hcfg.get("params")
         M_=params.get("M")
         phi_ = params.get("phi")
         H = HaldaneH(kx,ky,phi=phi_,M=M_)
@@ -234,61 +241,64 @@ def SolveH(kx,ky):
     sorted_evec = evec[:, sorted_indices]
     return sorted_val,sorted_evec
 
-def SolveBzNoninteracting():
-    epsx_factor = sys_dict.get("epsx",0)
-    epsy_factor = sys_dict.get("epsy",0)
-    kx = sys_dict["kxlist"]
-    ky = sys_dict["kylist"]
+def SolveBzNoninteracting(cfg):
+    hcfg = cfg.get("hamiltonian")
+    epsx_factor = cfg.get("epsx",0)
+    epsy_factor = cfg.get("epsy",0)
+    kx = cfg["kxlist"]
+    ky = cfg["kylist"]
     epsx = kx[1]*epsx_factor
     epsy = ky[1]*epsy_factor
-    n_points = sys_dict["Nk"]
-    n_bands = sys_dict["Bands"]
+    n_points = cfg["Nk"]
+    n_bands = cfg["Bands"]
     wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
     eval_BZ = np.zeros((n_points,n_points,n_bands))
     for i in range(n_points):
         for j in range(n_points):      
-            (val,vec)=SolveH(kx[i]+epsx,ky[j]+epsy) #ADDED epsilon shift to avoid zeros!
+            (val,vec)=SolveH(kx[i]+epsx,ky[j]+epsy,hcfg)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
     return eval_BZ, wf_BZ
 
-def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
-    U = sys_dict["U"]
-    epsilon = sys_dict["epsilon"]
-    kxlist = sys_dict["kxlist"]
-    kylist = sys_dict["kylist"]
-    Qxlist = sys_dict["Qxlist"]
-    Qylist = sys_dict["Qylist"]
-    Nk = sys_dict["Nk"]
-    interaction = sys_dict["interaction"]
-    c_band = sys_dict["c_band"]
-    v_band = sys_dict["v_band"]
-    htype = sys_dict.get("hamiltonian").get("kind")
+def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,cfg):
+    U = cfg["U"]
+    epsilon = cfg["epsilon"]
+    kxlist = cfg["kxlist"]
+    kylist = cfg["kylist"]
+    Qxlist = cfg["Qxlist"]
+    Qylist = cfg["Qylist"]
+    Nk = cfg["Nk"]
+    interaction = cfg["interaction"]
+    params = interaction["params"]
+    c_band = cfg["c_band"]
+    v_band = cfg["v_band"]
+    ltype = cfg.get("hamiltonian").get("lattice")
     wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
     for kx in range(Nk):
         for ky in range(Nk):
             for kx_tag in range(Nk):
                 for ky_tag in range(Nk):
-                    kx_Qx,ky_Qy = PBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk,htype)
-                    kx_Qx_tag,ky_Qy_tag = PBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk,htype)
+                    kx_Qx,ky_Qy = PBCAddInd((kx,ky),(2*Qx_indx,2*Qy_indx),Nk,ltype)
+                    kx_Qx_tag,ky_Qy_tag = PBCAddInd((kx_tag,ky_tag),(2*Qx_indx,2*Qy_indx),Nk,ltype)
                     if kx==kx_tag and ky==ky_tag:
                         e = ni_evals[kx_Qx][ky_Qy][c_band]- ni_evals[kx][ky][v_band]
                     else:
                         e = 0
                     if interaction.get("kind") == "coulomb":
+                        V_d_weight = params.get('vd',1)
+                        V_x_weight = params.get('vx',1)
                         k_vec = np.array([kxlist[kx],kylist[ky]])
                         ktag_vec = np.array([kxlist[kx_tag],kylist[ky_tag]])
                         deltak_vec = k_vec-ktag_vec
                         deltak_norm  = np.linalg.norm(deltak_vec)
-                        V_d = 1/(deltak_norm+epsilon)
+                        V_d = V_d_weight/(deltak_norm+epsilon)
                         if kx==kx_tag and ky==ky_tag:
                             V_d = 0
                         Q_vec = np.array([Qxlist[Qx_indx],Qylist[Qy_indx]])
                         Q_norm  = np.linalg.norm(Q_vec)
-                        V_x = 1/(Q_norm+epsilon)
+                        V_x = V_x_weight/(Q_norm+epsilon)
                     elif interaction.get("kind") == "constant":
-                        params = interaction.get("params")
                         V_d = params.get('vd')
                         V_x = params.get('vx')
                     else:
@@ -301,15 +311,15 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals):
                     X = U*V_x*np.vdot(uc_kQ, uv_k) * np.vdot(uv_kp, uc_kpQ)
                     H[kx,ky,kx_tag,ky_tag] = e - wk*(D-X)
     return H
-
-def SolveInteracting(ni_evals,ni_wf):
-    Nk = sys_dict["Nk"]
+    
+def SolveInteracting(ni_evals,ni_wf,cfg):
+    Nk = cfg["Nk"]
     NQ = Nk
     eQ_matrix = np.zeros((NQ,NQ,Nk*Nk))
     f_matrix = np.zeros((NQ,NQ,Nk*Nk,Nk*Nk),dtype=np.complex128)
     for i in range(NQ):#Qx
         for j in range(NQ):#Qy
-            H_Q = GetH2Band(i,j,ni_wf,ni_evals)
+            H_Q = GetH2Band(i,j,ni_wf,ni_evals,cfg)
             s = H_Q.shape
             H_Q2D = H_Q.reshape(s[0]*s[1], s[2]*s[3])
             e_Q, f_Q = np.linalg.eigh(H_Q2D)
@@ -320,7 +330,77 @@ def SolveInteracting(ni_evals,ni_wf):
             eQ_matrix[i,j]= sorted_e_Q
             f_matrix[i,j] = sorted_f_Q
     return(eQ_matrix,f_matrix)
-    
+
+#p Basis
+def HexPbcAddIndVec(px, py, dx, dy, nk):
+    """
+    Vectorized version of HexPBCAddInd for arrays.
+
+    Inputs can be broadcastable arrays.
+    Returns (kx_out, ky_out) arrays of the broadcasted shape.
+    """
+    # raw sums
+    kx = px + dx
+    ky = py + dy
+
+    # match your logic
+    kx_mod = np.mod(kx, nk)
+
+    wraps = np.floor_divide(ky, nk)   # same behavior as ky // nk (incl negatives)
+    ky_mod = np.mod(ky, nk)
+
+    k_mid = nk // 2
+    odd_wrap = (wraps % 2) != 0
+
+    # if odd wrap, shift kx by +/- k_mid depending on where it sits relative to k_mid
+    # This matches:
+    # if kx >= k_mid: kx -= k_mid else kx += k_mid
+    kx_shifted = np.where(kx_mod >= k_mid, kx_mod - k_mid, kx_mod + k_mid)
+
+    kx_out = np.where(odd_wrap, kx_shifted, kx_mod)
+    return kx_out.astype(int), ky_mod.astype(int)
+
+
+def SquarePbcAddIndVec(px, py, dx, dy, nk):
+    return (np.mod(px + dx, nk).astype(int), np.mod(py + dy, nk).astype(int))
+
+
+def FQkToFQpLattice(F_QQk, nk, ltype):
+    """
+    Convert F(Qx,Qy,k_flat) -> F(Qx,Qy,px,py) for square or hex PBC.
+    Assumes flattening idx = kx * nk + ky.
+    """
+    N_Qx, N_Qy, Nk_flat = F_QQk.shape
+    assert Nk_flat == nk * nk
+
+    # p grid
+    px0, py0 = np.meshgrid(np.arange(nk), np.arange(nk), indexing='ij')
+    px = px0[None, None, :, :]   # (1,1,nk,nk)
+    py = py0[None, None, :, :]   # (1,1,nk,nk)
+
+    # Q grids
+    Qx = np.arange(N_Qx)[:, None, None, None]   # (N_Qx,1,1,1)
+    Qy = np.arange(N_Qy)[None, :, None, None]   # (1,N_Qy,1,1)
+
+    # we want kv = p + (-Q)
+    dx = -Qx
+    dy = -Qy
+
+    if ltype == "square":
+        kvx, kvy = SquarePbcAddIndVec(px, py, dx, dy, nk)
+    elif ltype == "hexagonal":
+        kvx, kvy = HexPbcAddIndVec(px, py, dx, dy, nk)
+    else:
+        raise ValueError(f"Unknown ltype {ltype}")
+
+    # reshape F to kx,ky
+    F2 = F_QQk.reshape(N_Qx, N_Qy, nk, nk)
+
+    # gather (advanced indexing)
+    F_Qp = F2[Qx, Qy, kvx, kvy]   # (N_Qx,N_Qy,nk,nk)
+    return F_Qp
+
+
 def SaveData(data,filename,folder):
     if not filename.endswith('.npy'):
         filename += '.npy'
@@ -346,7 +426,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="Path to config.yml")
     args = ap.parse_args()
-    GetConfig(args.config)
+    cfg = GetConfig(args.config)
     start = datetime.now()
     # Format as string
     timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
@@ -359,37 +439,21 @@ if __name__ == "__main__":
     os.makedirs(data_path, exist_ok=True)
     os.makedirs(sub_data_path, exist_ok=True)
     config_file = sub_data_path / "config.yml"
-    SaveConfig(config_file)
-    ni_evals,ni_wf = SolveBzNoninteracting()
+    SaveConfig(config_file,cfg)
+    ni_evals,ni_wf = SolveBzNoninteracting(cfg)
     
-    #Test 1:
-    #norms = np.linalg.norm(ni_wf, axis=2)
-    #tol = 1e-8  # adjust if needed (e.g., 1e-8 for complex64)
-    #max_dev = np.max(np.abs(norms - 1.0))
-    #bad = np.argwhere(np.abs(norms - 1.0) > tol)
-#
-    #print("max deviation from 1:", max_dev)
-    #print("num bad vectors:", len(bad))
-#
-    ## show a few failing indices (i, j, band)
-    #print("first few bad:", bad[:10])
+    eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf,cfg)
+    print(f"F matrix shape:{f_matrix.shape}")
     
-    eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf)
-    
-    #Test 2: Throws error TypeError: unhashable type: 'numpy.ndarray'
-    #norms = np.linalg.norm(f_matrix.reshape(-1, f_matrix.shape[-1]), axis=0)
-    #print("Test2:", {norms})
-    
-    #integrated_f = np.sum(f_matrix,axis=2)
     SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
     SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk*Nk,Nk*Nk]
-    htype = sys_dict.get("hamiltonian").get("kind")
-    for n in range(sys_dict.get("n_Fs",0)):
+    ltype = cfg.get("hamiltonian").get("lattice")
+    for n in range(cfg.get("n_Fs",0)):
         Fn = f_matrix[:, :, :, n]
-        v= sys_dict.get("v_band")
-        c = sys_dict.get("c_band")
-        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c,htype)
-        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c,htype)
+        v= cfg.get("v_band")
+        c = cfg.get("c_band")
+        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c,ltype)
+        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c,ltype)
         SaveData(Fn, f"F[{n}]",sub_data_path)
         SaveData(UnBC, f"U[{n}]BC_C_{Cn}",sub_data_path)
         SaveData(UnProb, f"U[{n}]_Prob",sub_data_path)
