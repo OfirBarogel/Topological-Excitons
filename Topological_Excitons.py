@@ -14,41 +14,72 @@ def GetConfig(filename):
     hkind = hc["kind"]
     if hkind == "haldane" or hkind == "mos2":
         ltype =  "hexagonal"
-    elif hkind == "qwz":
+    elif hkind == "qwz" or hkind =="qwz analytic":
         ltype = "square"
     else:
         raise ValueError(f"Lattice type not configured: \"{hkind}\"")
     hc["lattice"] = ltype
     terms: List[str] = [t for t in hc.get("terms", [])]
-    if hkind=='qwz' or hkind == "haldane":
+    if hkind=='qwz' or hkind == "haldane" or hkind == "qwz analytic":
         cfg["Bands"] = 2
     elif hkind == 'mos2':
         if any(t in terms for t in ["zeeman", "soc"]):
             cfg["Bands"] = 6
         else:
             cfg["Bands"] = 3
-    Nk = cfg.get("Nk")
+    NQ = cfg["N"]
+    Nk = 4*NQ
+    cfg["Nk"] = Nk
     if ltype == "hexagonal":
-        cfg["kxlist"] = np.linspace(0,4*np.pi/3,Nk, endpoint = False)
-        cfg["kylist"] = np.linspace(0,2*np.pi/np.sqrt(3),Nk, endpoint = False)
-        cfg["Qxlist"] = np.linspace(0,8*np.pi/3,Nk,endpoint = False)
-        cfg["Qylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk,endpoint = False)
+        #TODO revisit 4BZ logic for hex everywhere
+        cfg["kxlist"] = np.linspace(0,8*np.pi/3,Nk, endpoint = False)
+        cfg["kylist"] = np.linspace(0,4*np.pi/np.sqrt(3),Nk, endpoint = False)
+        cfg["Qxlist"] = np.linspace(0,4*np.pi/3,NQ,endpoint = False)
+        cfg["Qylist"] = np.linspace(0,2*np.pi/np.sqrt(3),NQ,endpoint = False)
     elif ltype == 'square':
-        cfg["kxlist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
-        cfg["kylist"] = np.linspace(0,2*np.pi,Nk, endpoint = False)
-        cfg["Qxlist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
-        cfg["Qylist"] = np.linspace(0,4*np.pi,Nk,endpoint = False)
+        cfg["kxlist"] = np.linspace(0,4*np.pi,Nk, endpoint = False)
+        cfg["kylist"] = np.linspace(0,4*np.pi,Nk, endpoint = False)
+        cfg["Qxlist"] = np.linspace(0,2*np.pi,NQ,endpoint = False)
+        cfg["Qylist"] = np.linspace(0,2*np.pi,NQ,endpoint = False)
     else:
         raise ValueError("Couldnt parse Hamiltonian, add new klist interpretation")
     return cfg
 
 #for the py file
 def SaveConfig(config_file,cfg):
-    keys_to_save = ["version", "hamiltonian", "Nk", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
+    keys_to_save = ["version", "hamiltonian", "N", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
     config = {key: cfg.get(key) for key in keys_to_save if key in cfg}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
 
+def GetAnalyticQWZ(kx,ky,M):
+    dx = np.sin(kx)
+    dy = np.sin(ky)
+    dz = M + np.cos(kx) + np.cos(ky)
+    d  = np.sqrt(dx*dx + dy*dy + dz*dz)
+
+    uvA = np.array([dz - d, dx + 1j*dy], dtype=complex)        # bad near d≈dz (north pole)
+    uvB = np.array([dx - 1j*dy, -(dz + d)], dtype=complex)     # bad near d≈-dz (south pole)
+    
+    if abs(d + dz) > abs(dx - 1j*dy):
+        uc = np.array([d + dz, dx + 1j*dy], dtype=complex)
+    else:
+        uc = np.array([dx - 1j*dy, d - dz], dtype=complex)
+
+    # --- Valence band (E = -d) ---
+    if abs(d - dz) > abs(dx - 1j*dy):
+        uv = np.array([dz - d, dx + 1j*dy], dtype=complex)
+    else:
+        uv = np.array([dx - 1j*dy, -(d + dz)], dtype=complex)
+
+    # Normalize
+    uc /= np.linalg.norm(uc)
+    uv /= np.linalg.norm(uv)
+
+    evals = np.array([-d, d])
+    evecs = np.column_stack((uv, uc))
+    
+    return evals, evecs
 
 def QWZHamiltonian(kx,ky,M):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
@@ -193,7 +224,7 @@ def TNNMoS_2Hamiltonian(kx,ky,terms,params):
         H_spinful = H_spinful + SOC_full
     return H_spinful
 
-def HexPBCAddInd(k1: tuple[int,int],k2: tuple[int,int],nk: int)-> tuple[int,int]:
+def HexPBCAddInd(k1,k2,nk):
     kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
     kx_ind %= nk
     k_mid = nk // 2  # use integer division
@@ -206,10 +237,12 @@ def HexPBCAddInd(k1: tuple[int,int],k2: tuple[int,int],nk: int)-> tuple[int,int]
         else:
             kx_ind += k_mid
     return kx_ind, ky_ind
+    
 def SquarePBCAddInd(idx, delta, N):
     i, j   = idx
     di, dj = delta
     return ((i + di) % N, (j + dj) % N)
+
 def PBCAddInd(k1,k2,nk,ltype):
     if ltype== "hexagonal":
         return HexPBCAddInd(k1,k2,nk)
@@ -233,6 +266,9 @@ def SolveH(kx,ky,hcfg):
         M_=params.get("M")
         phi_ = params.get("phi")
         H = HaldaneH(kx,ky,phi=phi_,M=M_)
+    elif kind =="qwz analytic":
+        M = hcfg.get("params").get("M")
+        return GetAnalyticQWZ(kx,ky,M)
     else:
         raise ValueError("Could not parse acceptable Hamiltonian")
     val,evec = np.linalg.eigh(H)
@@ -267,14 +303,19 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,cfg):
     kylist = cfg["kylist"]
     Qxlist = cfg["Qxlist"]
     Qylist = cfg["Qylist"]
-    Nk = cfg["Nk"]
+    Nk = cfg["Nk"]/2
     interaction = cfg["interaction"]
-    params = interaction["params"]
+    params = cfg["params"]
     c_band = cfg["c_band"]
     v_band = cfg["v_band"]
     ltype = cfg.get("hamiltonian").get("lattice")
-    wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
-    H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex)
+    if ltype == "hexagonal":
+        wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
+    elif ltype == "square":
+        wk = 1/pow(Nk,2)
+    else:
+        raise ValueError("die in a car crash")
+    H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex) #kx,ky,kx',ky'
     for kx in range(Nk):
         for ky in range(Nk):
             for kx_tag in range(Nk):
@@ -313,15 +354,15 @@ def GetH2Band(Qx_indx,Qy_indx,wf_ni, ni_evals,cfg):
     return H
     
 def SolveInteracting(ni_evals,ni_wf,cfg):
-    Nk = cfg["Nk"]
-    NQ = Nk
+    Nk = ni_wf.shape[0]/2 #because 4BZ but we only want k and k' in 1BZ
+    NQ = cfg["N"]
     eQ_matrix = np.zeros((NQ,NQ,Nk*Nk))
     f_matrix = np.zeros((NQ,NQ,Nk*Nk,Nk*Nk),dtype=np.complex128)
     for i in range(NQ):#Qx
         for j in range(NQ):#Qy
             H_Q = GetH2Band(i,j,ni_wf,ni_evals,cfg)
             s = H_Q.shape
-            H_Q2D = H_Q.reshape(s[0]*s[1], s[2]*s[3])
+            H_Q2D = H_Q.reshape(s[0]*s[1], s[2]*s[3]) #k_ij,k'_ij
             e_Q, f_Q = np.linalg.eigh(H_Q2D)
             sorted_indices = np.argsort(e_Q)
             sorted_e_Q = e_Q[sorted_indices]

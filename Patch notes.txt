@@ -4,6 +4,7 @@ Major:
 - Tested qwz with Carolina
 - Refactored graphing
 - Removed global sys_dict, passing config to functions.
+- Changed to 4BZ k 1BZ Q to avoid doing PBC
 minor:
 -added small shift in grid handeling via config factors of dk names epsx and epsy
 -added nFs to config to output F's and U data.
