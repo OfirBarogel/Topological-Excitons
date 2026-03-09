@@ -1,10 +1,12 @@
-ver 0.1.4
+ver 0.1.5
 Major:
+- Added cylindrical gauge and BZ border handeling
 - Added ExctionWF.py to hande exction wf BC and probability from F's
 - Tested qwz with Carolina
 - Refactored graphing
 - Removed global sys_dict, passing config to functions.
 - Changed to 4BZ k 1BZ Q to avoid doing PBC
+- Added analytic solutions to qwz
 minor:
 -added small shift in grid handeling via config factors of dk names epsx and epsy
 -added nFs to config to output F's and U data.
