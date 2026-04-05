@@ -6,10 +6,16 @@ import argparse
 from datetime import datetime
 import yaml
 import ExcitonWF
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
+import DataManager
 #ver 0.1.5
 def GetConfig(filename):
     with open(filename, 'r') as stream:
-        cfg = yaml.load(stream)#,Loader = yaml.UnsafeLoader)
+        try:
+            cfg = yaml.load(stream)
+        except TypeError:
+            cfg = yaml.load(stream, Loader=yaml.UnsafeLoader)
     hc = cfg["hamiltonian"]
     hkind = hc["kind"]
     if hkind in{"haldane","mos2"}:
@@ -30,27 +36,27 @@ def GetConfig(filename):
 def HandleGridConfig(cfg):
     NQ = cfg["NQ"]
     grid_handle = cfg.get("Grid","sew")
+    range_handle = cfg.get("Range","center")
     ltype = cfg["hamiltonian"]["lattice"]
-    if grid_handle == "extend":
-        Nk = 6*NQ
-        cfg["k start"] = int(Nk/3)
-        if ltype == "square":
-            kx_min = ky_min = -2*np.pi
-            kx_max = ky_max = 4*np.pi
-            Qx_min = Qy_min = 0
-            Qx_max = Qy_max =2*np.pi
-        elif ltype == "hexagonal":
-            raise ValueError("hexagonal extended grid handling not implemented")
-    elif grid_handle == "sew":
-        Nk = 2*NQ
-        cfg["k start"] = 0
-        if ltype == "square":
+    if ltype == "hexagonal":
+        raise ValueError("hexagonal grid handling not implemented")
+    elif ltype == "square":
+        if grid_handle == "extend":
+            n_mult = 1
+            Q_range_mult = 2
+        elif grid_handle == "sew":
+            n_mult = 2
+            Q_range_mult = 1
+        if range_handle == "foreward":
+            kx_min = ky_min = 0
+            kx_max = ky_max = 2*np.pi
+        elif range_handle == "center":
             kx_min = ky_min = -np.pi
             kx_max = ky_max = np.pi
-            Qx_min = Qy_min = -np.pi
-            Qx_max = Qy_max = np.pi
-        elif ltype == "hexagonal":
-            raise ValueError("hexagonal extended grid handling not implemented")
+        Nk = n_mult*NQ
+        #bc it is square im just multiplying kx range rather than both
+        Qx_min = Qy_min = -Q_range_mult*kx_min
+        Qx_max = Qy_max = Q_range_mult*kx_max
     cfg["Nk"] = Nk
     cfg["kxlist"] = np.linspace(kx_min,kx_max,Nk,endpoint = False)
     cfg["kylist"] = np.linspace(ky_min,ky_max,Nk,endpoint = False)
@@ -60,7 +66,7 @@ def HandleGridConfig(cfg):
 
 #for the py file
 def SaveConfig(config_file,cfg):
-    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs"]
+    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs","RunType","Range"]
     config = {key: cfg.get(key) for key in keys_to_save if key in cfg}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
@@ -116,7 +122,6 @@ def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
     return H
 # 10.1103/PhysRevB.88.085433
 def TNNMoS_2Hamiltonian(kx,ky,terms,params):
-    params = hcfg.get("params", {})
     has_soc    = "soc" in terms
     has_zeeman = "zeeman" in terms
     alpha =0.5*kx
@@ -279,23 +284,35 @@ def UnitPhase(z, eps=1e-14):
     a = np.abs(z)
     return z / (a + eps)
 
-def ParallelTransportX(u):
+def ParallelTransportCylindrical(u, enforce_ky_periodic=True):
     """
-    u_band: shape (Nx, Ny, Norb, Nband), normalized.
-    Returns gauged copy u_g with PT along x for each ky line.
+    u: shape (Nx, Ny, Norb, Nband), normalized.
+    Returns u_g in cylindrical gauge:
+      1) ky-parallel transport on i=0 column
+      2) optional ky-periodic sewing on i=0 column
+      3) x-parallel transport on each ky row
     """
-    u_g = u.copy()
-    Nx, Ny, Norb, Nband = u_g.shape
+    u_g = np.zeros_like(u, dtype=np.complex128)
+    Nx, Ny, Norb, Nband = u.shape
+
     for band in range(Nband):
-        for j in range(Ny):           # loop over ky lines
-            # fix an anchor phase at i=0 (e.g. make first component real)
-            comp = np.argmax(np.abs(u_g[0, j, :, band]))
-            phase0 = u_g[0, j, comp, band] / (np.abs(u_g[0, j, comp, band]) + 1e-14)
-            u_g[0, j, :, band] /= phase0
-    
-            for i in range(Nx-1):
-                z = np.vdot(u_g[i, j,:,band], u_g[i+1, j,:,band])   # <i|i+1>
-                u_g[i+1, j, :, band] *= np.conj(UnitPhase(z)) # multiply by e^{-i arg z}
+        u_g[0, 0, :, band] = u[0, 0, :, band]
+
+        for j in range(Ny - 1):
+            z = np.vdot(u_g[0, j, :, band], u[0, j + 1, :, band])   # <j|j+1>
+            u_g[0, j + 1, :, band] = np.conj(UnitPhase(z)) * u[0, j + 1, :, band]
+
+        if enforce_ky_periodic:
+            z_end = np.vdot(u_g[0, Ny - 1, :, band], u_g[0, 0, :, band])
+            theta = np.angle(z_end)
+
+            for j in range(Ny):
+                u_g[0, j, :, band] *= np.exp(-1j * j * theta / Ny)
+
+        for j in range(Ny):
+            for i in range(Nx - 1):
+                z = np.vdot(u_g[i, j, :, band], u[i + 1, j, :, band])   # <i|i+1>
+                u_g[i + 1, j, :, band] = np.conj(UnitPhase(z)) * u[i + 1, j, :, band]
 
     return u_g
 
@@ -358,10 +375,10 @@ def SolveBzNoninteracting(cfg):
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
     if ltype == "square":
-        wf_BZ[:,:,:,:] = ParallelTransportX(wf_BZ[:,:,:,:])
+        wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
     return eval_BZ, wf_BZ
 
-def GetH2Band(Qx,Qy,wf_ni,ni_evals,cfg,gx):
+def GetH2Band(Qx,Qy,ni_wf,ni_evals,cfg,gx):
     U = cfg["U"]
     epsilon = cfg["epsilon"]
     kxlist = cfg["kxlist"]
@@ -369,6 +386,7 @@ def GetH2Band(Qx,Qy,wf_ni,ni_evals,cfg,gx):
     Qxlist = cfg["Qxlist"]
     Qylist = cfg["Qylist"]
     Nk = cfg["Nk"]
+    range_handle = cfg["Range"]
     interaction = cfg["interaction"]
     params = interaction["params"]
     c_band = cfg["c_band"]
@@ -379,18 +397,25 @@ def GetH2Band(Qx,Qy,wf_ni,ni_evals,cfg,gx):
     elif ltype == "square":
         wk = 1/pow(Nk,2)
     else:
-        raise ValueError("die in a car crash")
+        raise ValueError(f"type {ltype} not implemented for BSE kernel")
+    if range_handle == "foreward":
+        qxi = Qx
+        qyi = Qy
+    elif range_handle == "center":
+        NQ = cfg["NQ"]
+        qxi = Qx - NQ//2
+        qyi = Qy - NQ//2        
     H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex) #px,py,px',py'
     for px in range(Nk):
         for py in range(Nk):
             Kp = (px,py,0,0)
-            Kv = PBCAddInd(Kp,(-Qx,-Qy),Nk,ltype)
-            Kc = PBCAddInd(Kp,(Qx,Qy),Nk,ltype)
+            Kv = PBCAddInd(Kp,(-qxi,-qyi),Nk,ltype)
+            Kc = PBCAddInd(Kp,(qxi,qyi),Nk,ltype)
             for pxp in range(Nk):
                 for pyp in range(Nk):
                     Kpp = (pxp,pyp,0,0)
-                    Kvp = PBCAddInd(Kpp,(-Qx,-Qy),Nk,ltype)
-                    Kcp = PBCAddInd(Kpp,(Qx,Qy),Nk,ltype)
+                    Kvp = PBCAddInd(Kpp,(-qxi,-qyi),Nk,ltype)
+                    Kcp = PBCAddInd(Kpp,(qxi,qyi),Nk,ltype)
                     if px==pxp and py==pyp:
                         e = ni_evals[Kc[0]][Kc[1]][c_band]- ni_evals[Kv[0]][Kv[1]][v_band]
                     else:
@@ -411,12 +436,23 @@ def GetH2Band(Qx,Qy,wf_ni,ni_evals,cfg,gx):
                     elif interaction.get("kind") == "constant":
                         V_d = params.get('vd')
                         V_x = params.get('vx')
+                    elif interaction.get("kind") == "seperable":
+                        V = params.get('vx')
+                        #<u_c(p+Q/2)|u_c(p-Q/2)><u_v(p'-Q/2)|u_v(p'+Q/2)>
+                        # <u_c(Kc)|u_c(Kv)><u_v(Kv)|u_v(Kc)>
+                        uc_c = u_ext(ni_wf,gx,Kc,c_band)
+                        uc_v = u_ext(ni_wf,gx,Kv,c_band)
+                        uv_vp = u_ext(ni_wf,gx,Kvp,v_band)
+                        uv_cp = u_ext(ni_wf,gx,Kcp,v_band)
+                        I = U*V*np.vdot(uc_c,uc_v)*np.vdot(uv_vp,uv_cp)
+                        H[px,py,pxp,pyp] = e - wk*I
+                        continue
                     else:
                         raise ValueError("Could not parse acceptable interaction kind")
-                    uc = u_ext(wf_ni,gx,Kc,c_band)
-                    uv = u_ext(wf_ni,gx,Kv,v_band)
-                    ucp = u_ext(wf_ni,gx,Kcp,c_band)
-                    uvp = u_ext(wf_ni,gx,Kvp,v_band)
+                    uc = u_ext(ni_wf,gx,Kc,c_band)
+                    uv = u_ext(ni_wf,gx,Kv,v_band)
+                    ucp = u_ext(ni_wf,gx,Kcp,c_band)
+                    uvp = u_ext(ni_wf,gx,Kvp,v_band)
                     D = U*V_d*np.vdot(uc, ucp) * np.vdot(uvp, uv)
                     X = U*V_x*np.vdot(uc, uv) * np.vdot(uvp, ucp)
                     H[px,py,pxp,pyp] = e - wk*(D-X)
@@ -447,13 +483,138 @@ def SolveInteracting(ni_evals,ni_wf,cfg,gx):
             eQ_matrix[i,j]= sorted_e_Q
             f_matrix[i,j] = sorted_f_Q_pxpy
     return(eQ_matrix,f_matrix)
+def _SavePerQ(path, i, j, e_all, f_keep, meta=None):
+    """Save per-Q results atomically."""
+    path = Path(path)
+    tmp = path / f"Q_{i:03d}_{j:03d}.tmp.npz"
+    out = path / f"Q_{i:03d}_{j:03d}.npz"
 
+    np.savez_compressed(tmp, e_all=e_all, f_keep=f_keep, meta=meta or {})
+    os.replace(tmp, out)
+    return out
+
+#---Parallel code---#
+def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):    
+    """
+    Worker function executed in each process.
+    Qx, Qy, cfg_path, ni_wf_path, ni_evals_path, gx_path, outdir
+    """
+    n_Fs = cfg["n_Fs"]
+    # Large arrays: mmap_mode="r" avoids copying; workers open read-only
+    ni_wf = np.load(ni_wf_path, mmap_mode="r")
+    ni_evals = np.load(ni_evals_path, mmap_mode="r")
+    gx = np.load(gx_path, mmap_mode="r")
+
+    # The function GetH2Band must accept these mmap arrays
+    try:
+        H_Q = GetH2Band(Qx, Qy, ni_wf, ni_evals, cfg, gx)
+    except Exception as e:
+        # propagate error in a readable way for the driver
+        raise RuntimeError(f"GetH2Band failed for Q=({Qx},{Qy}): {e}")
+
+    s = H_Q.shape
+    Nk = cfg["Nk"]
+    Nk2 = s[0] * s[1]  # should equal Nk*Nk
+    H_Q2D = H_Q.reshape(Nk2, Nk2)
+
+    # dense diagonalization; can be swapped later for eigsh/LinearOperator
+    e_Q, f_Q = np.linalg.eigh(H_Q2D)
+    sorted_indices = np.argsort(e_Q)
+    sorted_e_Q = np.real(e_Q[sorted_indices])
+
+    # Keep only n_Fs eigenvectors if requested
+    if n_Fs is None or n_Fs <= 0:
+        n_keep = Nk2
+    else:
+        n_keep = min(n_Fs, Nk2)
+
+    sorted_f_Q = f_Q[:, sorted_indices[:n_keep]]   # shape (Nk2, n_keep)
+    # reshape to (Nk, Nk, Nk2) if you want original px/py layout
+    # But for compact storage we store flattened vectors: (Nk2, n_keep)
+    f_keep = sorted_f_Q  # (Nk2, n_keep)
+
+    # Meta
+    meta = {
+        "Qx": int(Qx), "Qy": int(Qy),
+        "Nk": int(Nk),
+        "Nk2": int(Nk2),
+        "NQ": int(cfg["NQ"]),
+        "n_keep": int(n_keep)
+    }
+
+    # Save per-Q to outdir
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    out = _SavePerQ(outdir, Qx, Qy, sorted_e_Q, f_keep, meta=meta)
+    # Return path for logging
+    return str(out)
+def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, gx_path, outdir,n_workers = None, resume=True):
+    """
+    Parallel driver. Saves per-Q `.npz` files in outdir.
+    cfg: config dict (small enough to pickle/pass)
+    """
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    NQ = int(cfg["NQ"])
+
+    # build list of Q points to run
+    tasks = []
+    for i in range(NQ):
+        for j in range(NQ):
+            perQ_file = outdir / f"Q_{i:03d}_{j:03d}.npz"
+            if resume and perQ_file.exists():
+                continue
+            tasks.append((i, j))
+
+    if not tasks:
+        print("All Q tasks already exist; nothing to run.")
+        return
+
+    if n_workers is None:
+        runtype = cfg.get("RunType", "Local")
+
+        if runtype == "Local":
+            # Use almost all local cores
+            n_workers = max(1, multiprocessing.cpu_count() - 1)
+    
+        elif runtype == "Cluster":
+            # Prefer scheduler-provided core count
+            # SLURM example:
+            n_workers = os.environ.get("SLURM_CPUS_PER_TASK")
+    
+            if n_workers is None:
+                # fallback if not running under SLURM
+                print("Warning: SLURM_CPUS_PER_TASK not set, falling back to cpu_count()")
+                n_workers = multiprocessing.cpu_count()
+            else:
+                n_workers = int(n_workers)
+    
+        else:
+            raise ValueError(f"Unknown RunType: {runtype}")
+
+    print(f"Running {len(tasks)} Q-points with {n_workers} workers...")
+
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        futures = [
+            ex.submit(
+                SolveOneQTask,
+                i, j, cfg,
+                str(ni_wf_path), str(ni_evals_path), str(gx_path),
+                str(outdir),
+            )
+            for (i, j) in tasks
+        ]
+
+        for fut in as_completed(futures):
+            out = fut.result()   # will raise if worker raised
+            print("done:", out)
+#---Parallel code---#
 def SaveData(data,filename,folder):
     if not filename.endswith('.npy'):
         filename += '.npy'
     full_path = folder / filename
     np.save(full_path, data)
-
 
 def slurm_tag():
     env = os.environ
@@ -472,7 +633,7 @@ def slurm_tag():
 def HandlePaths(runtype,timestamp):
     if runtype == "Local":
         tag = ""
-        storage_path = Path("/Local_Tests")
+        storage_path = Path("Local_Tests")
     elif runtype == "Cluster":
         tag = slurm_tag()
         storage_path = Path("/tobiasholder-storage/ofirbarogel")
@@ -481,9 +642,7 @@ def HandlePaths(runtype,timestamp):
     sub_data_path = data_path / Path(f"{timestamp}")
     return data_path, sub_data_path
     
-
-if __name__ == "__main__":
-    #parse
+def Main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="Path to config.yml")
     args = ap.parse_args()
@@ -497,23 +656,58 @@ if __name__ == "__main__":
     os.makedirs(sub_data_path, exist_ok=True)
     config_file = sub_data_path / "config.yml"
     SaveConfig(config_file,cfg)
-    #GO
-    ni_evals,ni_wf = SolveBzNoninteracting(cfg)
+    # --- compute noninteracting pieces
+    ni_evals, ni_wf = SolveBzNoninteracting(cfg)
     gx = SeamPhaseGx(ni_wf)
-    eQ_matrix, f_matrix = SolveInteracting(ni_evals,ni_wf,cfg,gx)
-    print(f"F matrix shape:{f_matrix.shape}")
-    SaveData(eQ_matrix,"Exciton_Energys", sub_data_path) #[NQ,NQ,Nk*Nk]
-    SaveData(f_matrix,"Fs",data_path) #[NQ,NQ,Nk,Nk,Nk*Nk]
-    ltype = cfg.get("hamiltonian").get("lattice")
-    for n in range(cfg.get("n_Fs",0)):
-        Fn = f_matrix[:, :, :,:, n]
-        v= cfg.get("v_band")
-        c = cfg.get("c_band")
-        UnBC,Cn = ExcitonWF.GetExcitonBC(Fn,ni_wf,v,c,ltype,gx)
-        UnProb = ExcitonWF.GetExcitonProbability(Fn,ni_wf,v,c,ltype,gx)
-        SaveData(Fn, f"F[{n}]",sub_data_path)
-        SaveData(UnBC, f"U[{n}]BC_C_{Cn}",sub_data_path)
-        SaveData(UnProb, f"U[{n}]_Prob",sub_data_path)
+
+    # directory layout
+    perq_dir = Path(data_path) / "perQ"
+    inputs_dir = Path(data_path) / "inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    perq_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save large arrays to disk once (workers will mmap them)
+    ni_wf_path = inputs_dir / "ni_wf.npy"
+    ni_evals_path = inputs_dir / "ni_evals.npy"
+    gx_path = inputs_dir / "gx.npy"
+    np.save(ni_wf_path, ni_wf)
+    np.save(ni_evals_path, ni_evals)
+    np.save(gx_path, gx)
+
+    # Run the parallel Q pipeline (computes and saves per-Q npz files)
+    RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(gx_path),
+                       perq_dir, resume=True)
+
+    # Stitch the outputs you want:
+    NQ = cfg["NQ"]
+    n_Fs = cfg["n_Fs"]
+    Nk = cfg["Nk"]
+    Nk2 = Nk * Nk
+    # 1) full eigenvalue stitching (cheapish)
+    evals_all_path = sub_data_path / "Exciton_Energys.npy"
+    DataManager.StitchEvals(perq_dir, evals_all_path, NQ)
+
+    # 2) eigenvectors only up to n_Fs (only if n_Fs>0)
+    evecs_keep_path = sub_data_path / "F_keep.npy"
+    DataManager.StitchEvecs(perq_dir, evecs_keep_path, NQ, n_Fs) #Saves F[NQ,NQ,Nk^2,n_Fs]
+
+    # Now downstream code can use these .npy or load per-Q files on demand.
+    if n_Fs and n_Fs > 0:
+        # open memmap for eigenvectors: shape (NQ, NQ, Nk2, n_Fs)
+        Fmem = np.load(evecs_keep_path, mmap_mode="r")
+        for n in range(n_Fs):
+            # reconstruct Fn in original shape expected by ExcitonWF
+            Fn_flat = Fmem[:, :, :, n]  # shape (NQ, NQ, Nk2)
+            Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
+            v = cfg.get("v_band")
+            c = cfg.get("c_band")
+            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, cfg.get("hamiltonian").get("lattice"), gx, cfg["Range"])
+            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, cfg.get("hamiltonian").get("lattice"), gx, cfg["Range"])
+            SaveData(Fn, f"F[{n}]", sub_data_path)
+            SaveData(UnBC, f"U[{n}]BC_C_{Cn}", sub_data_path)
+            SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
     end = datetime.now()
     elapsed = end-start
     (data_path / "Runtime.txt").write_text(f"{elapsed}\n")
+if __name__ == "__main__":
+    Main()
