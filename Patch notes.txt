@@ -1,8 +1,6 @@
-ver 0.1.5
+ver 0.1.6
 Major:
--Parallelized SolveInteracting
+-Added Hexagonal 2 band
+-Changed normalization of integral to include Jacobian
+-b1 b2 reciprocal lattice instead of standard grid
 minor:
--added seperable case tests
--range handleings
--wavefunction overlaps
--side by side video

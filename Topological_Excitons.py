@@ -9,7 +9,8 @@ import ExcitonWF
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import DataManager
-#ver 0.1.5
+import scipy
+#ver 0.1.6
 def GetConfig(filename):
     with open(filename, 'r') as stream:
         try:
@@ -35,38 +36,37 @@ def GetConfig(filename):
 
 def HandleGridConfig(cfg):
     NQ = cfg["NQ"]
-    grid_handle = cfg.get("Grid","sew")
+    grid_handle = cfg.get("Grid","extend")
     range_handle = cfg.get("Range","center")
     ltype = cfg["hamiltonian"]["lattice"]
-    if ltype == "hexagonal":
-        raise ValueError("hexagonal grid handling not implemented")
-    elif ltype == "square":
-        if grid_handle == "extend":
-            n_mult = 1
-            Q_range_mult = 2
-        elif grid_handle == "sew":
-            n_mult = 2
-            Q_range_mult = 1
-        if range_handle == "foreward":
-            kx_min = ky_min = 0
-            kx_max = ky_max = 2*np.pi
-        elif range_handle == "center":
-            kx_min = ky_min = -np.pi
-            kx_max = ky_max = np.pi
-        Nk = n_mult*NQ
-        #bc it is square im just multiplying kx range rather than both
-        Qx_min = Qy_min = -Q_range_mult*kx_min
-        Qx_max = Qy_max = Q_range_mult*kx_max
+    if grid_handle == "extend":
+        Nk = NQ
+    elif grid_handle == "sew":
+        Nk = 2*NQ
+    if range_handle == "foreward":
+        k_frac = np.linspace(0,1,Nk,endpoint=False)
+        Q_frac = np.linspace(0,1,NQ,endpoint=False)
+    elif range_handle == "center":
+        k_frac = np.linspace(-0.5,0.5,Nk,endpoint=False)
+        Q_frac = np.linspace(-0.5,0.5,NQ,endpoint=False)
+    else:
+        raise Exception("wrong range handle")
+    if ltype == "square":
+        b1 = (2*np.pi,0)
+        b2 = (0,2*np.pi)
+    elif ltype == "hexagonal":        
+        b1 = (2*np.pi/3,2*np.pi/np.sqrt(3))
+        b2 = (-2*np.pi/3,2*np.pi/np.sqrt(3))
+    b = [np.array(b1), np.array(b2)]
     cfg["Nk"] = Nk
-    cfg["kxlist"] = np.linspace(kx_min,kx_max,Nk,endpoint = False)
-    cfg["kylist"] = np.linspace(ky_min,ky_max,Nk,endpoint = False)
-    cfg["Qxlist"] = np.linspace(Qx_min,Qx_max,NQ,endpoint = False)
-    cfg["Qylist"] = np.linspace(Qy_min,Qy_max,NQ,endpoint = False)
+    cfg["rec_vec"] = b
+    cfg["k_frac"] = k_frac
+    cfg["Q_frac"] = Q_frac
     return
 
 #for the py file
 def SaveConfig(config_file,cfg):
-    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","epsy","epsx","n_Fs","RunType","Range"]
+    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","eps1","eps2","n_Fs","RunType","Range"]
     config = {key: cfg.get(key) for key in keys_to_save if key in cfg}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
@@ -242,43 +242,21 @@ def TNNMoS_2Hamiltonian(kx,ky,terms,params):
         H_spinful = H_spinful + SOC_full
     return H_spinful
 
-def HexPBCAddInd(k1,k2,nk):
-    kx_ind, ky_ind = (a + b for a, b in zip(k1, k2)) #reversed
-    kx_ind %= nk
-    k_mid = nk // 2  # use integer division
-    # how many times does k_x need to wrap?
-    wraps = ky_ind // nk
-    ky_ind %= nk
-    if wraps % 2 != 0:
-        if kx_ind >= k_mid:
-            kx_ind -= k_mid
-        else:
-            kx_ind += k_mid
-    return kx_ind, ky_ind
-def SquarePBCAddInd(idx, delta, N):
-    i, j   = idx
-    di, dj = delta
-    sx = i + di
-    sy = j + dj
-    nx = sx // N
-    ny = sy // N
-    ix = sx % N
-    jy = sy % N
-    return ix, jy, nx, ny
-
-def PBCAddInd(k_wrap,delta,nk,ltype):
+def PBCAddInd(k_wrap,delta,N):
     """
     k_wrap: (i,j,nx,ny) representing the coord in the first BZ and how many wraps on each
     delta: just id,jd
+    works in all lattice types since using the parallelogram BZ (acts like square when using i*b1+j*b2)
     """
-    if ltype== "hexagonal":
-        return HexPBCAddInd(k_wrap,delta,nk)
-    elif ltype == "square":
-        i,j,nx,ny = k_wrap
-        kx,ky,dnx,dny = SquarePBCAddInd((i,j),delta,nk)
-        return (kx,ky,nx+dnx,ny+dny)
-    else:
-        raise Exception(f"PBC type not configured for this lattice \"{ltype}\"") 
+    i,j,nx,ny = k_wrap
+    di, dj = delta
+    sx = i + di
+    sy = j + dj
+    dnx = sx // N
+    dny = sy // N
+    ix = sx % N
+    jy = sy % N
+    return ix, jy, nx+dnx, ny+dny
 
 def UnitPhase(z, eps=1e-14):
     a = np.abs(z)
@@ -359,78 +337,73 @@ def SolveH(kx,ky,hcfg):
 def SolveBzNoninteracting(cfg):
     hcfg = cfg.get("hamiltonian")
     ltype = hcfg["lattice"]
-    epsx_factor = cfg.get("epsx",0)
-    epsy_factor = cfg.get("epsy",0)
-    kx = cfg["kxlist"]
-    ky = cfg["kylist"]
-    epsx = kx[1]*epsx_factor
-    epsy = ky[1]*epsy_factor
+    b = cfg["rec_vec"]
+    k_frac = cfg["k_frac"]
     n_points = cfg["Nk"]
     n_bands = cfg["Bands"]
-    wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #kx,ky,orbital weight, band
+    dk_frac = 1/n_points
+    eps1_factor = dk_frac*cfg.get("eps1",0)
+    eps2_factor = dk_frac*cfg.get("eps2",0)
+    (epsx,epsy) = b[0]*eps1_factor+b[1]*eps2_factor
+    wf_BZ = np.zeros((n_points,n_points,n_bands,n_bands), dtype=complex) #k1,k2,orbital weight, band
     eval_BZ = np.zeros((n_points,n_points,n_bands))
     for i in range(n_points):
-        for j in range(n_points):      
-            (val,vec)=SolveH(kx[i]+epsx,ky[j]+epsy,hcfg)
+        for j in range(n_points):
+            (kx,ky) = k_frac[i]*b[0] + k_frac[j]*b[1]
+            (val,vec)=SolveH(kx+epsx,ky+epsy,hcfg)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
-    if ltype == "square":
-        wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
+    wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
     return eval_BZ, wf_BZ
 
-def GetH2Band(Qx,Qy,ni_wf,ni_evals,cfg,gx):
+def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a convention that was logical for me
     U = cfg["U"]
     epsilon = cfg["epsilon"]
-    kxlist = cfg["kxlist"]
-    kylist = cfg["kylist"]
-    Qxlist = cfg["Qxlist"]
-    Qylist = cfg["Qylist"]
+    [b1,b2] = cfg["rec_vec"]
+    k_frac = cfg["k_frac"]
     Nk = cfg["Nk"]
     range_handle = cfg["Range"]
     interaction = cfg["interaction"]
     params = interaction["params"]
     c_band = cfg["c_band"]
     v_band = cfg["v_band"]
-    ltype = cfg.get("hamiltonian").get("lattice")
-    if ltype == "hexagonal":
-        wk = 2/(np.sqrt(3)*pow(Nk,2)) #2/sqrt3 from triangular lattice
-    elif ltype == "square":
-        wk = 1/pow(Nk,2)
-    else:
-        raise ValueError(f"type {ltype} not implemented for BSE kernel")
+    #weight for integral from Jacobian and dk1 dk2
+    Jacobian = np.abs(b1[0]*b2[1] - b1[1]*b2[0])
+    wk = Jacobian/pow(Nk,2)
     if range_handle == "foreward":
-        qxi = Qx
-        qyi = Qy
+        q1i = Q1
+        q2i = Q2
     elif range_handle == "center":
         NQ = cfg["NQ"]
-        qxi = Qx - NQ//2
-        qyi = Qy - NQ//2        
-    H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex) #px,py,px',py'
-    for px in range(Nk):
-        for py in range(Nk):
-            Kp = (px,py,0,0)
-            Kv = PBCAddInd(Kp,(-qxi,-qyi),Nk,ltype)
-            Kc = PBCAddInd(Kp,(qxi,qyi),Nk,ltype)
-            for pxp in range(Nk):
-                for pyp in range(Nk):
-                    Kpp = (pxp,pyp,0,0)
-                    Kvp = PBCAddInd(Kpp,(-qxi,-qyi),Nk,ltype)
-                    Kcp = PBCAddInd(Kpp,(qxi,qyi),Nk,ltype)
-                    if px==pxp and py==pyp:
+        q1i = Q1 - NQ//2
+        q2i = Q2 - NQ//2        
+    H = np.zeros((Nk,Nk,Nk,Nk), dtype = complex) #p1,p2,p1',p2'
+    for p1 in range(Nk):
+        for p2 in range(Nk):
+            Kp = (p1,p2,0,0)
+            Kv = PBCAddInd(Kp,(-q1i,-q2i),Nk)
+            Kc = PBCAddInd(Kp,(q1i,q2i),Nk)
+            for p1p in range(Nk):
+                for p2p in range(Nk):
+                    Kpp = (p1p,p2p,0,0)
+                    Kvp = PBCAddInd(Kpp,(-q1i,-q2i),Nk)
+                    Kcp = PBCAddInd(Kpp,(q1i,q2i),Nk)
+                    if p1==p1p and p2==p2p:
                         e = ni_evals[Kc[0]][Kc[1]][c_band]- ni_evals[Kv[0]][Kv[1]][v_band]
                     else:
                         e = 0
                     if interaction.get("kind") == "coulomb":
+                        Q_frac = cfg["Q_frac"]
                         V_d_weight = params.get('vd',1)
                         V_x_weight = params.get('vx',1)
-                        k_vec = np.array([kxlist[Kv[0]],kylist[Kv[1]]])
-                        k_vecp = np.array([kxlist[Kvp[0]],kylist[Kvp[1]]])
+                        k_vec = np.array(k_frac[Kv[0]]*b1 + k_frac[Kv[1]]*b2)
+                        k_vecp = np.array(k_frac[Kvp[0]]*b1 + k_frac[Kvp[1]]*b2)
                         deltak_vec = k_vec-k_vecp
                         deltak_norm  = np.linalg.norm(deltak_vec)
                         V_d = V_d_weight/(deltak_norm+epsilon)
-                        if px==pxp and py==pyp:
+                        if p1==p1p and p2==p2p:
                             V_d = 0
-                        Q_vec = np.array([Qxlist[Qx],Qylist[Qy]])
+                        Q_vec = np.array(Q_frac[Q1]*b1 + Q_frac[Q2]*b2)
                         Q_norm  = np.linalg.norm(Q_vec)
                         V_x = V_x_weight/(Q_norm+epsilon)
                     elif interaction.get("kind") == "constant":
@@ -440,22 +413,22 @@ def GetH2Band(Qx,Qy,ni_wf,ni_evals,cfg,gx):
                         V = params.get('vx')
                         #<u_c(p+Q/2)|u_c(p-Q/2)><u_v(p'-Q/2)|u_v(p'+Q/2)>
                         # <u_c(Kc)|u_c(Kv)><u_v(Kv)|u_v(Kc)>
-                        uc_c = u_ext(ni_wf,gx,Kc,c_band)
-                        uc_v = u_ext(ni_wf,gx,Kv,c_band)
-                        uv_vp = u_ext(ni_wf,gx,Kvp,v_band)
-                        uv_cp = u_ext(ni_wf,gx,Kcp,v_band)
+                        uc_c = u_ext(ni_wf,g1,Kc,c_band)
+                        uc_v = u_ext(ni_wf,g1,Kv,c_band)
+                        uv_vp = u_ext(ni_wf,g1,Kvp,v_band)
+                        uv_cp = u_ext(ni_wf,g1,Kcp,v_band)
                         I = U*V*np.vdot(uc_c,uc_v)*np.vdot(uv_vp,uv_cp)
-                        H[px,py,pxp,pyp] = e - wk*I
+                        H[p1,p2,p1p,p2p] = e - wk*I
                         continue
                     else:
                         raise ValueError("Could not parse acceptable interaction kind")
-                    uc = u_ext(ni_wf,gx,Kc,c_band)
-                    uv = u_ext(ni_wf,gx,Kv,v_band)
-                    ucp = u_ext(ni_wf,gx,Kcp,c_band)
-                    uvp = u_ext(ni_wf,gx,Kvp,v_band)
+                    uc = u_ext(ni_wf,g1,Kc,c_band)
+                    uv = u_ext(ni_wf,g1,Kv,v_band)
+                    ucp = u_ext(ni_wf,g1,Kcp,c_band)
+                    uvp = u_ext(ni_wf,g1,Kvp,v_band)
                     D = U*V_d*np.vdot(uc, ucp) * np.vdot(uvp, uv)
                     X = U*V_x*np.vdot(uc, uv) * np.vdot(uvp, ucp)
-                    H[px,py,pxp,pyp] = e - wk*(D-X)
+                    H[p1,p2,p1p,p2p] = e - wk*(D-X)
     return H
 
 def u_ext(u, gx, K, band):
@@ -518,7 +491,7 @@ def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):
     H_Q2D = H_Q.reshape(Nk2, Nk2)
 
     # dense diagonalization; can be swapped later for eigsh/LinearOperator
-    e_Q, f_Q = np.linalg.eigh(H_Q2D)
+    e_Q, f_Q = scipy.linalg.eigh(H_Q2D)
     sorted_indices = np.argsort(e_Q)
     sorted_e_Q = np.real(e_Q[sorted_indices])
 
@@ -701,8 +674,8 @@ def Main():
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
             v = cfg.get("v_band")
             c = cfg.get("c_band")
-            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, cfg.get("hamiltonian").get("lattice"), gx, cfg["Range"])
-            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, cfg.get("hamiltonian").get("lattice"), gx, cfg["Range"])
+            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Range"])
+            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Range"])
             SaveData(Fn, f"F[{n}]", sub_data_path)
             SaveData(UnBC, f"U[{n}]BC_C_{Cn}", sub_data_path)
             SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
