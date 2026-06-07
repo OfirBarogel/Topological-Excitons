@@ -3,4 +3,10 @@ Major:
 -Added Hexagonal 2 band
 -Changed normalization of integral to include Jacobian
 -b1 b2 reciprocal lattice instead of standard grid
+-Added marker handling for Graph2D
+-Added axes manager for Graph2D
+-Added classes in separate folders
+-Added high symmetry plots for exciton energies
 minor:
+- forward is spelled forward
+- changed config structre (grid range handle and seam)

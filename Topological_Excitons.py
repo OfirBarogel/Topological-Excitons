@@ -9,7 +9,7 @@ import ExcitonWF
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import DataManager
-import scipy
+from scipy.linalg import eigh
 #ver 0.1.6
 def GetConfig(filename):
     with open(filename, 'r') as stream:
@@ -36,14 +36,15 @@ def GetConfig(filename):
 
 def HandleGridConfig(cfg):
     NQ = cfg["NQ"]
-    grid_handle = cfg.get("Grid","extend")
-    range_handle = cfg.get("Range","center")
+    grid_cfg = cfg.get("Grid")
+    grid_handle = grid_cfg.get("Handle","extend")
+    range_handle = grid_cfg.get("Range","center")
     ltype = cfg["hamiltonian"]["lattice"]
     if grid_handle == "extend":
         Nk = NQ
     elif grid_handle == "sew":
         Nk = 2*NQ
-    if range_handle == "foreward":
+    if range_handle == "forward":
         k_frac = np.linspace(0,1,Nk,endpoint=False)
         Q_frac = np.linspace(0,1,NQ,endpoint=False)
     elif range_handle == "center":
@@ -66,7 +67,7 @@ def HandleGridConfig(cfg):
 
 #for the py file
 def SaveConfig(config_file,cfg):
-    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","eps1","eps2","n_Fs","RunType","Range"]
+    keys_to_save = ["version", "hamiltonian", "NQ", "Grid", "U", "epsilon","interaction","c_band","v_band","eps1","eps2","n_Fs","RunType"]
     config = {key: cfg.get(key) for key in keys_to_save if key in cfg}
     with open(config_file, 'w') as outfile:
         yaml.dump(config, outfile, default_flow_style=False)
@@ -100,9 +101,10 @@ def GetAnalyticQWZ(kx,ky,M):
     
     return evals, evecs
 
-def QWZHamiltonian(kx,ky,M):
+def QWZHamiltonian(kx,ky,M, t = -1, tt = 0):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
-    return np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M+np.cos(kx)+np.cos(ky))*pauli_mat[2]
+    I = np.array([[1,0],[0,1]])
+    return -tt*(np.cos(kx)+np.cos(ky))+np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M-t*(np.cos(kx)+np.cos(ky)))*pauli_mat[2]
 
 def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
     d = np.array([
@@ -262,73 +264,162 @@ def UnitPhase(z, eps=1e-14):
     a = np.abs(z)
     return z / (a + eps)
 
-def ParallelTransportCylindrical(u, enforce_ky_periodic=True):
+def ParallelTransportCylindrical(
+    u,
+    enforce_ky_periodic=True,
+    swap_k_coordinates=False,
+):
     """
     u: shape (Nx, Ny, Norb, Nband), normalized.
-    Returns u_g in cylindrical gauge:
-      1) ky-parallel transport on i=0 column
-      2) optional ky-periodic sewing on i=0 column
-      3) x-parallel transport on each ky row
+
+    If swap_k_coordinates=False:
+      - parallel transport coordinate: k1 / x
+      - periodic coordinate: k2 / y
+
+    If swap_k_coordinates=True:
+      - parallel transport coordinate: k2 / y
+      - periodic coordinate: k1 / x
+
+    note: for hexagonal the coordinates of u are u[b1,b2,orb,band]
     """
-    u_g = np.zeros_like(u, dtype=np.complex128)
-    Nx, Ny, Norb, Nband = u.shape
+
+    if swap_k_coordinates:
+        # Work in swapped coordinates internally:
+        # u_work[a,b] = u[b,a]
+        u_work = np.swapaxes(u, 0, 1)
+    else:
+        u_work = u
+
+    u_g_work = np.zeros_like(u_work, dtype=np.complex128)
+    Nx, Ny, Norb, Nband = u_work.shape
 
     for band in range(Nband):
-        u_g[0, 0, :, band] = u[0, 0, :, band]
+        # 1) Seed at (0,0)
+        u_g_work[0, 0, :, band] = u_work[0, 0, :, band]
 
+        # 2) Parallel transport along periodic coordinate on first column
         for j in range(Ny - 1):
-            z = np.vdot(u_g[0, j, :, band], u[0, j + 1, :, band])   # <j|j+1>
-            u_g[0, j + 1, :, band] = np.conj(UnitPhase(z)) * u[0, j + 1, :, band]
+            z = np.vdot(
+                u_g_work[0, j, :, band],
+                u_work[0, j + 1, :, band],
+            )
+            u_g_work[0, j + 1, :, band] = (
+                np.conj(UnitPhase(z)) * u_work[0, j + 1, :, band]
+            )
 
+        # 3) Enforce trivial sewing on first column
         if enforce_ky_periodic:
-            z_end = np.vdot(u_g[0, Ny - 1, :, band], u_g[0, 0, :, band])
+            z_end = np.vdot(
+                u_g_work[0, Ny - 1, :, band],
+                u_g_work[0, 0, :, band],
+            )
             theta = np.angle(z_end)
 
             for j in range(Ny):
-                u_g[0, j, :, band] *= np.exp(-1j * j * theta / Ny)
+                u_g_work[0, j, :, band] *= np.exp(-1j * j * theta / Ny)
 
+        # 4) Parallel transport along transport coordinate
         for j in range(Ny):
             for i in range(Nx - 1):
-                z = np.vdot(u_g[i, j, :, band], u[i + 1, j, :, band])   # <i|i+1>
-                u_g[i + 1, j, :, band] = np.conj(UnitPhase(z)) * u[i + 1, j, :, band]
+                z = np.vdot(
+                    u_g_work[i, j, :, band],
+                    u_work[i + 1, j, :, band],
+                )
+                u_g_work[i + 1, j, :, band] = (
+                    np.conj(UnitPhase(z)) * u_work[i + 1, j, :, band]
+                )
 
-    return u_g
+    if swap_k_coordinates:
+        return np.swapaxes(u_g_work, 0, 1)
 
-def SeamPhaseGx(u_g):
-    #convention, use gx[j] for the target j
+    return u_g_work
+
+def SeamPhaseG(u_g, seam_across_kx=False):
     """
-    u_g: (Nx,Ny,Norb,Nband) after parallel gauge in x
-    returns gx: (Ny,Nband,) complex unimodular
+    u_g: (Nx, Ny, Norb, Nband)
+
+    If seam_across_kx=False:
+      returns gx[j, band], shape (Ny, Nband)
+      seam compares k1 end to k1 start at fixed k2:
+          <u_g[Nx-1, j] | u_g[0, j]>
+
+    If seam_across_kx=True:
+      returns gy[i, band], shape (Nx, Nband)
+      seam compares k2 end to k2 start at fixed k1:
+          <u_g[i, Ny-1] | u_g[i, 0]>
     """
-    Nx, Ny, _ , Nband= u_g.shape
-    gx = np.empty((Ny,Nband), dtype=complex)
-    for band in range(Nband):
-        for j in range(Ny):
-            z = np.vdot(u_g[Nx-1, j,:,band], u_g[0, j,:,band])
-            gx[j,band] = z / (np.abs(z) + 1e-14)
-    return gx
+
+    Nx, Ny, _, Nband = u_g.shape
+
+    if not seam_across_kx:
+        gx = np.empty((Ny, Nband), dtype=complex)
+
+        for band in range(Nband):
+            for j in range(Ny):
+                z = np.vdot(
+                    u_g[Nx - 1, j, :, band],
+                    u_g[0, j, :, band],
+                )
+                gx[j, band] = z / (np.abs(z) + 1e-14)
+
+        return gx
+
+    else:
+        gy = np.empty((Nx, Nband), dtype=complex)
+
+        for band in range(Nband):
+            for i in range(Nx):
+                z = np.vdot(
+                    u_g[i, Ny - 1, :, band],
+                    u_g[i, 0, :, band],
+                )
+                gy[i, band] = z / (np.abs(z) + 1e-14)
+
+        return gy
+
+def FirstRealGauge(v):
+    first = 0
+    if np.isclose(v[0], 0):
+        first = 1
+
+    phase = np.angle(v[first])
+    v_fixed = v * np.exp(-1j * phase)
+
+    return v_fixed
+
+def GaugeFixFPerQ(FQ):
+    """
+    accepts F[P,n_keep] -> gauge fixes for each n level -> returns
+    """
+    Np_flat, n_keep  = FQ.shape
+    FQ_gauged = np.zeros_like(FQ)
+    for n in range(n_keep):
+        Fn_gauged = FirstRealGauge(FQ[:,n])
+        FQ_gauged[:,n] = Fn_gauged
+    return FQ_gauged
 
 def SolveH(kx,ky,hcfg):
     kind = hcfg.get("kind",None)
+    params = hcfg.get("params")
     if kind == "mos2":
-        params = hcfg["params"]
         terms = set(map(str.lower, hcfg.get("terms", [])))
         H = TNNMoS_2Hamiltonian(kx,ky,terms,params)
     elif kind == "qwz":
-        M = hcfg.get("params").get("M")
-        H = QWZHamiltonian(kx,ky,M)
+        M = params.get("M")
+        t = params.get("t",-1)
+        tt = params.get("tt",0)
+        H = QWZHamiltonian(kx,ky,M,t,tt)
     elif kind =="haldane":
-        params= hcfg.get("params")
         M_=params.get("M")
         phi_ = params.get("phi")
         H = HaldaneH(kx,ky,phi=phi_,M=M_)
     elif kind =="qwz analytic":
-        M = hcfg.get("params").get("M")
+        M = params.get("M")
         return GetAnalyticQWZ(kx,ky,M)
     else:
         raise ValueError("Could not parse acceptable Hamiltonian")
     #if we are here we are solving numerically
-    val,evec = np.linalg.eigh(H)
+    val,evec = eigh(H)
     sorted_indices = np.argsort(val)
     sorted_val = val[sorted_indices]
     sorted_evec = evec[:, sorted_indices]
@@ -353,7 +444,7 @@ def SolveBzNoninteracting(cfg):
             (val,vec)=SolveH(kx+epsx,ky+epsy,hcfg)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
-    wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
+    wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:],swap_k_coordinates = cfg["Grid"]["SeamK1"])
     return eval_BZ, wf_BZ
 
 def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a convention that was logical for me
@@ -362,7 +453,7 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a conv
     [b1,b2] = cfg["rec_vec"]
     k_frac = cfg["k_frac"]
     Nk = cfg["Nk"]
-    range_handle = cfg["Range"]
+    range_handle = cfg["Grid"]["Range"]
     interaction = cfg["interaction"]
     params = interaction["params"]
     c_band = cfg["c_band"]
@@ -370,7 +461,7 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a conv
     #weight for integral from Jacobian and dk1 dk2
     Jacobian = np.abs(b1[0]*b2[1] - b1[1]*b2[0])
     wk = Jacobian/pow(Nk,2)
-    if range_handle == "foreward":
+    if range_handle == "forward":
         q1i = Q1
         q2i = Q2
     elif range_handle == "center":
@@ -431,31 +522,15 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a conv
                     H[p1,p2,p1p,p2p] = e - wk*(D-X)
     return H
 
-def u_ext(u, gx, K, band):
+def u_ext(u, gauge_seam, K, band, seam_across_kx = False):
     i, j, nx, ny = K
-    # cylindrical gauge: seam only in x
-    phase = gx[j, band]**nx
+    if seam_across_kx:
+        phase = gauge_seam[i, band]**ny
+    else:
+        phase = gauge_seam[j, band]**nx
+    # cylindrical gauge: seam only in x (1 for non square)
     return phase * u[i, j, :, band]
 
-def SolveInteracting(ni_evals,ni_wf,cfg,gx):
-    Nk = cfg["Nk"]
-    NQ = cfg["NQ"]
-    eQ_matrix = np.zeros((NQ,NQ,Nk*Nk))
-    f_matrix = np.zeros((NQ, NQ, Nk, Nk, Nk*Nk), dtype=np.complex128)
-    for i in range(NQ):#Qx
-        for j in range(NQ):#Qy
-            H_Q = GetH2Band(i,j,ni_wf,ni_evals,cfg,gx)
-            s = H_Q.shape
-            H_Q2D = H_Q.reshape(s[0]*s[1], s[2]*s[3]) #p_ij,p'_ij
-            e_Q, f_Q = np.linalg.eigh(H_Q2D)
-            sorted_indices = np.argsort(e_Q)
-            sorted_e_Q = e_Q[sorted_indices]
-            sorted_f_Q = f_Q[:, sorted_indices]
-            sorted_f_Q_pxpy = sorted_f_Q.reshape(Nk, Nk, Nk*Nk)
-            sorted_e_Q = np.real(sorted_e_Q)
-            eQ_matrix[i,j]= sorted_e_Q
-            f_matrix[i,j] = sorted_f_Q_pxpy
-    return(eQ_matrix,f_matrix)
 def _SavePerQ(path, i, j, e_all, f_keep, meta=None):
     """Save per-Q results atomically."""
     path = Path(path)
@@ -491,7 +566,7 @@ def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):
     H_Q2D = H_Q.reshape(Nk2, Nk2)
 
     # dense diagonalization; can be swapped later for eigsh/LinearOperator
-    e_Q, f_Q = scipy.linalg.eigh(H_Q2D)
+    e_Q, f_Q = eigh(H_Q2D)
     sorted_indices = np.argsort(e_Q)
     sorted_e_Q = np.real(e_Q[sorted_indices])
 
@@ -505,6 +580,8 @@ def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):
     # reshape to (Nk, Nk, Nk2) if you want original px/py layout
     # But for compact storage we store flattened vectors: (Nk2, n_keep)
     f_keep = sorted_f_Q  # (Nk2, n_keep)
+    #gauge fix the F's
+    f_keep = GaugeFixFPerQ(f_keep)
 
     # Meta
     meta = {
@@ -603,35 +680,38 @@ def slurm_tag():
     step = env.get("SLURM_STEP_ID") or env.get("SLURM_PROCID")
     return f"slurm{base}" + (f"-s{step}" if step else "")
 
-def HandlePaths(runtype,timestamp):
+def HandlePaths(runtype,cfg_name):
     if runtype == "Local":
         tag = ""
         storage_path = Path("Local_Tests")
     elif runtype == "Cluster":
         tag = slurm_tag()
         storage_path = Path("/tobiasholder-storage/ofirbarogel")
-    data_folder = Path(f"Data/{timestamp}-{tag}")
+    data_folder = Path(f"Data/{cfg_name}-{tag}")
     data_path = storage_path / data_folder
-    sub_data_path = data_path / Path(f"{timestamp}")
-    return data_path, sub_data_path
+    sub_data_path = data_path / Path(f"{cfg_name}")
+    down_path = storage_path / Path("Download")
+    return data_path, sub_data_path,down_path
     
 def Main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="Path to config.yml")
     args = ap.parse_args()
     cfg = GetConfig(args.config)
+    cfg_name = Path(args.config).stem
     start = datetime.now()
     # Handle directiries
-    timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
+    #timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
     runtype = cfg["RunType"]
-    data_path, sub_data_path = HandlePaths(runtype,timestamp)
+    data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name)
     os.makedirs(data_path, exist_ok=True)
     os.makedirs(sub_data_path, exist_ok=True)
     config_file = sub_data_path / "config.yml"
     SaveConfig(config_file,cfg)
     # --- compute noninteracting pieces
     ni_evals, ni_wf = SolveBzNoninteracting(cfg)
-    gx = SeamPhaseGx(ni_wf)
+    SeamK1 = cfg["Grid"].get("SeamK1",False)
+    gx = SeamPhaseG(ni_wf,seam_across_kx = SeamK1)
 
     # directory layout
     perq_dir = Path(data_path) / "perQ"
@@ -674,11 +754,12 @@ def Main():
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
             v = cfg.get("v_band")
             c = cfg.get("c_band")
-            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Range"])
-            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Range"])
+            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"],SeamK1)
+            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"],SeamK1)
             SaveData(Fn, f"F[{n}]", sub_data_path)
             SaveData(UnBC, f"U[{n}]BC_C_{Cn}", sub_data_path)
             SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
+    DataManager.CopyDirectory(sub_data_path,down_path)
     end = datetime.now()
     elapsed = end-start
     (data_path / "Runtime.txt").write_text(f"{elapsed}\n")

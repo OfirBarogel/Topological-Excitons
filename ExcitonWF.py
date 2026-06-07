@@ -3,7 +3,7 @@ from pathlib import Path
 import argparse
 import Topological_Excitons as TE
 
-def GetExcitonBC(Fn, ni_wf,v,c,gx,range_handle):
+def GetExcitonBC(Fn, ni_wf,v,c,gx,range_handle,seam_across_k1= False):
     """
     accepts Fn[Qx,Qy,px,py] (Qband is selected already)
     """
@@ -16,9 +16,9 @@ def GetExcitonBC(Fn, ni_wf,v,c,gx,range_handle):
             KQ=(i,j,0,0)
             KQL = TE.PBCAddInd(KQ,(-1,0),NQ)
             KQD = TE.PBCAddInd(KQ,(0,-1),NQ)
-            num = ExcitonVProd_PBasis((KQ[0],KQ[1]),(KQL[0],KQL[1]),Fn,ni_wf,v,c,gx,range_handle)
+            num = ExcitonVProd_PBasis((KQ[0],KQ[1]),(KQL[0],KQL[1]),Fn,ni_wf,v,c,gx,range_handle,seam_across_k1)
             link_x[i, j] = num / np.abs(num)
-            num = ExcitonVProd_PBasis((KQ[0],KQ[1]),(KQD[0],KQD[1]),Fn,ni_wf,v,c,gx,range_handle)
+            num = ExcitonVProd_PBasis((KQ[0],KQ[1]),(KQD[0],KQD[1]),Fn,ni_wf,v,c,gx,range_handle,seam_across_k1)
             link_y[i, j] = num / np.abs(num)
     for i in range(NQ):
         for j in range(NQ):
@@ -30,7 +30,7 @@ def GetExcitonBC(Fn, ni_wf,v,c,gx,range_handle):
     C=np.sum(BC)/(2*np.pi)
     return BC,C
 
-def GetExcitonProbability(Fn,ni_wf,v,c,gx,range_handle):
+def GetExcitonProbability(Fn,ni_wf,v,c,gx,range_handle,seam_across_k1):
     """
     accepts Fn[Qx,Qy,px,py] (Qband is selected already)
     """
@@ -38,27 +38,32 @@ def GetExcitonProbability(Fn,ni_wf,v,c,gx,range_handle):
     P = np.zeros([NQ,NQ],dtype = 'f') #'f'
     for i in range(NQ):
         for j in range(NQ):
-            P[i,j] = ExcitonVProd_PBasis((i,j),(i,j),Fn,ni_wf,v,c,gx,range_handle)
+            P[i,j] = ExcitonVProd_PBasis((i,j),(i,j),Fn,ni_wf,v,c,gx,range_handle,seam_across_k1)
     return P
 
-def ExcitonVProd_PBasis(Q,Qp,Fn,ni_wf,v,c,gx,range_handle):
+def ExcitonVProd_PBasis(Q,Qp,Fn,ni_wf,v,c,gx,range_handle,seam_across_k1=False):
     """
     accepts Q and Qp integer touples, Fn[Qx,Qy,px,py] ni_wf[kx,ky,orb,band]
-    v,c band indices and gx[ky,band] sewing phase
+    v,c band indices, gx[ky,band] sewing phase, seam_across_k1 for single particle phase seam direction
     """
     nk = ni_wf.shape[0]
     nQ = Fn.shape[0]
     val =0
-    if range_handle == "foreward":
+    if range_handle == "forward":
         qxi = Q[0]
         qyi = Q[1]
         qxip = Qp[0]
         qyip = Qp[1]          
     elif range_handle == "center":
-        qxi = Q[0] - NQ//2
-        qyi = Q[1] - NQ//2
-        qxip = Qp[0] - NQ//2
-        qyip = Qp[1] - NQ//2  
+        qxi = Q[0] - nQ//2
+        qyi = Q[1] - nQ//2
+        qxip = Qp[0] - nQ//2
+        qyip = Qp[1] - nQ//2
+    
+    else:
+        raise ValueError(
+            f"range_handle must be 'forward' or 'center', got {range_handle}"
+        )
     for px in range(nk):
         for py in range(nk):
             Kp = (px,py,0,0)
@@ -68,10 +73,10 @@ def ExcitonVProd_PBasis(Q,Qp,Fn,ni_wf,v,c,gx,range_handle):
             Kvp = TE.PBCAddInd(Kp,(-qxip,-qyip),nk)
             FQ = Fn[Q[0],Q[1],Kp[0],Kp[1]]
             FQp = Fn[Qp[0],Qp[1],Kp[0],Kp[1]]
-            uc = TE.u_ext(ni_wf,gx,Kc,c)
-            uv = TE.u_ext(ni_wf,gx,Kv,v)
-            ucp = TE.u_ext(ni_wf,gx,Kcp,c)
-            uvp = TE.u_ext(ni_wf,gx,Kvp,v)
+            uc = TE.u_ext(ni_wf,gx,Kc,c,seam_across_k1)
+            uv = TE.u_ext(ni_wf,gx,Kv,v,seam_across_k1)
+            ucp = TE.u_ext(ni_wf,gx,Kcp,c,seam_across_k1)
+            uvp = TE.u_ext(ni_wf,gx,Kvp,v,seam_across_k1)
             val+= np.vdot(FQp,FQ)*np.vdot(ucp,uc)*np.vdot(uv,uvp)
     return val
         
