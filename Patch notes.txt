@@ -7,6 +7,7 @@ Major:
 -Added axes manager for Graph2D
 -Added classes in separate folders
 -Added high symmetry plots for exciton energies
+-Added optional download folder for parameter scans
 minor:
 - forward is spelled forward
 - changed config structre (grid range handle and seam)

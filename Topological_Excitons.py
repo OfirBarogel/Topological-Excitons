@@ -444,7 +444,7 @@ def SolveBzNoninteracting(cfg):
             (val,vec)=SolveH(kx+epsx,ky+epsy,hcfg)
             eval_BZ[i,j] = val
             wf_BZ[i,j] = vec
-    wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:],swap_k_coordinates = cfg["Grid"]["SeamK1"])
+    wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
     return eval_BZ, wf_BZ
 
 def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a convention that was logical for me
@@ -680,7 +680,7 @@ def slurm_tag():
     step = env.get("SLURM_STEP_ID") or env.get("SLURM_PROCID")
     return f"slurm{base}" + (f"-s{step}" if step else "")
 
-def HandlePaths(runtype,cfg_name):
+def HandlePaths(runtype,cfg_name,down_folder):
     if runtype == "Local":
         tag = ""
         storage_path = Path("Local_Tests")
@@ -690,28 +690,35 @@ def HandlePaths(runtype,cfg_name):
     data_folder = Path(f"Data/{cfg_name}-{tag}")
     data_path = storage_path / data_folder
     sub_data_path = data_path / Path(f"{cfg_name}")
-    down_path = storage_path / Path("Download")
+    if down_folder:
+        down_path = storage_path / Path("Download") / Path(down_folder)
+    else:
+        down_path = None
     return data_path, sub_data_path,down_path
     
 def Main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="Path to config.yml")
+    ap.add_argument("--down_folder",default = None, required = False, help = "Directory name in Download folder")
     args = ap.parse_args()
+    down_folder = args.down_folder
     cfg = GetConfig(args.config)
     cfg_name = Path(args.config).stem
     start = datetime.now()
     # Handle directiries
     #timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
     runtype = cfg["RunType"]
-    data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name)
+    data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name,down_folder)
     os.makedirs(data_path, exist_ok=True)
     os.makedirs(sub_data_path, exist_ok=True)
     config_file = sub_data_path / "config.yml"
     SaveConfig(config_file,cfg)
     # --- compute noninteracting pieces
     ni_evals, ni_wf = SolveBzNoninteracting(cfg)
-    SeamK1 = cfg["Grid"].get("SeamK1",False)
-    gx = SeamPhaseG(ni_wf,seam_across_kx = SeamK1)
+    seamTest = cfg["Grid"].get("SeamTest",False)
+    gx = SeamPhaseG(ni_wf)
+    if seamTest:
+        gx.fill(1)
 
     # directory layout
     perq_dir = Path(data_path) / "perQ"
@@ -754,12 +761,13 @@ def Main():
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
             v = cfg.get("v_band")
             c = cfg.get("c_band")
-            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"],SeamK1)
-            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"],SeamK1)
+            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"])
+            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"])
             SaveData(Fn, f"F[{n}]", sub_data_path)
             SaveData(UnBC, f"U[{n}]BC_C_{Cn}", sub_data_path)
             SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
-    DataManager.CopyDirectory(sub_data_path,down_path)
+    if down_path:
+        DataManager.CopyDirectory(sub_data_path,down_path)
     end = datetime.now()
     elapsed = end-start
     (data_path / "Runtime.txt").write_text(f"{elapsed}\n")
