@@ -40,25 +40,37 @@ def HandleGridConfig(cfg):
     grid_handle = grid_cfg.get("Handle","extend")
     range_handle = grid_cfg.get("Range","center")
     ltype = cfg["hamiltonian"]["lattice"]
+    bands = cfg["Bands"]
     if grid_handle == "extend":
         Nk = NQ
+        Q_range_mult = 2
     elif grid_handle == "sew":
         Nk = 2*NQ
+        Q_range_mult = 1
     if range_handle == "forward":
         k_frac = np.linspace(0,1,Nk,endpoint=False)
-        Q_frac = np.linspace(0,1,NQ,endpoint=False)
+        Q_frac = np.linspace(0,1*Q_range_mult,NQ,endpoint=False)
     elif range_handle == "center":
         k_frac = np.linspace(-0.5,0.5,Nk,endpoint=False)
-        Q_frac = np.linspace(-0.5,0.5,NQ,endpoint=False)
+        Q_frac = np.linspace(-0.5*Q_range_mult,0.5*Q_range_mult,NQ,endpoint=False)
     else:
         raise Exception("wrong range handle")
     if ltype == "square":
         b1 = (2*np.pi,0)
         b2 = (0,2*np.pi)
+        if bands == 2:
+            tau = np.array([[0,0],[0,0]])
+        else:
+            raise Exception("multiband square lattice orbital positions not configured")
     elif ltype == "hexagonal":        
         b1 = (2*np.pi/3,2*np.pi/np.sqrt(3))
         b2 = (-2*np.pi/3,2*np.pi/np.sqrt(3))
+        if bands ==2:
+            tau = np.array([[0,0],[-1,0]])
+        else:
+            raise Exception("multiband hexagonal lattice orbital positions not configured")
     b = [np.array(b1), np.array(b2)]
+    cfg["tau"] = tau
     cfg["Nk"] = Nk
     cfg["rec_vec"] = b
     cfg["k_frac"] = k_frac
@@ -339,7 +351,7 @@ def SeamPhaseG(u_g, seam_across_kx=False):
     u_g: (Nx, Ny, Norb, Nband)
 
     If seam_across_kx=False:
-      returns gx[j, band], shape (Ny, Nband)
+      returns g1[j, band], shape (Ny, Nband)
       seam compares k1 end to k1 start at fixed k2:
           <u_g[Nx-1, j] | u_g[0, j]>
 
@@ -352,7 +364,7 @@ def SeamPhaseG(u_g, seam_across_kx=False):
     Nx, Ny, _, Nband = u_g.shape
 
     if not seam_across_kx:
-        gx = np.empty((Ny, Nband), dtype=complex)
+        g1 = np.empty((Ny, Nband), dtype=complex)
 
         for band in range(Nband):
             for j in range(Ny):
@@ -360,12 +372,12 @@ def SeamPhaseG(u_g, seam_across_kx=False):
                     u_g[Nx - 1, j, :, band],
                     u_g[0, j, :, band],
                 )
-                gx[j, band] = z / (np.abs(z) + 1e-14)
+                g1[j, band] = z / (np.abs(z) + 1e-14)
 
-        return gx
+        return g1
 
     else:
-        gy = np.empty((Nx, Nband), dtype=complex)
+        g2 = np.empty((Nx, Nband), dtype=complex)
 
         for band in range(Nband):
             for i in range(Nx):
@@ -373,9 +385,21 @@ def SeamPhaseG(u_g, seam_across_kx=False):
                     u_g[i, Ny - 1, :, band],
                     u_g[i, 0, :, band],
                 )
-                gy[i, band] = z / (np.abs(z) + 1e-14)
+                g2[i, band] = z / (np.abs(z) + 1e-14)
 
-        return gy
+        return g2
+
+def SeamOrbitalPhaseUg(rec_vec,tau):
+    "returns U_arr=[Ug1,Ug2] the phases for sewing in the oribtal basis"
+    Ug1 = GetU_G(rec_vec[0],tau)
+    Ug2 = GetU_G(rec_vec[1],tau)
+    U_arr = [Ug1,Ug2]
+    return U_arr
+
+
+def GetU_G(G, tau):
+    phases = np.exp(-1j * tau @ G)
+    return np.diag(phases)
 
 def FirstRealGauge(v):
     first = 0
@@ -446,8 +470,14 @@ def SolveBzNoninteracting(cfg):
             wf_BZ[i,j] = vec
     wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
     return eval_BZ, wf_BZ
+def SeamHandle(ni_wf,cfg):
+    b= cfg["rec_vec"]
+    tau = cfg["tau"]
+    g1 = SeamPhaseG(ni_wf)
+    U_arr = SeamOrbitalPhaseUg(b,tau)
+    return [g1,U_arr]
 
-def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a convention that was logical for me
+def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,phase_data): 
     U = cfg["U"]
     epsilon = cfg["epsilon"]
     [b1,b2] = cfg["rec_vec"]
@@ -504,32 +534,36 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,g1): #g1 is gx I couldnt decide on a conv
                         V = params.get('vx')
                         #<u_c(p+Q/2)|u_c(p-Q/2)><u_v(p'-Q/2)|u_v(p'+Q/2)>
                         # <u_c(Kc)|u_c(Kv)><u_v(Kv)|u_v(Kc)>
-                        uc_c = u_ext(ni_wf,g1,Kc,c_band)
-                        uc_v = u_ext(ni_wf,g1,Kv,c_band)
-                        uv_vp = u_ext(ni_wf,g1,Kvp,v_band)
-                        uv_cp = u_ext(ni_wf,g1,Kcp,v_band)
+                        uc_c = u_ext(ni_wf,phase_data,Kc,c_band)
+                        uc_v = u_ext(ni_wf,phase_data,Kv,c_band,U_arr)
+                        uv_vp = u_ext(ni_wf,phase_data,Kvp,v_band,U_arr)
+                        uv_cp = u_ext(ni_wf,phase_data,Kcp,v_band,U_arr)
                         I = U*V*np.vdot(uc_c,uc_v)*np.vdot(uv_vp,uv_cp)
                         H[p1,p2,p1p,p2p] = e - wk*I
                         continue
                     else:
                         raise ValueError("Could not parse acceptable interaction kind")
-                    uc = u_ext(ni_wf,g1,Kc,c_band)
-                    uv = u_ext(ni_wf,g1,Kv,v_band)
-                    ucp = u_ext(ni_wf,g1,Kcp,c_band)
-                    uvp = u_ext(ni_wf,g1,Kvp,v_band)
+                    uc = u_ext(ni_wf,phase_data,Kc,c_band)
+                    uv = u_ext(ni_wf,phase_data,Kv,v_band)
+                    ucp = u_ext(ni_wf,phase_data,Kcp,c_band)
+                    uvp = u_ext(ni_wf,phase_data,Kvp,v_band)
                     D = U*V_d*np.vdot(uc, ucp) * np.vdot(uvp, uv)
                     X = U*V_x*np.vdot(uc, uv) * np.vdot(uvp, ucp)
                     H[p1,p2,p1p,p2p] = e - wk*(D-X)
     return H
 
-def u_ext(u, gauge_seam, K, band, seam_across_kx = False):
+def u_ext(u, phase_data, K, band, seam_across_kx = False):
     i, j, nx, ny = K
+    [gauge_seam , U_arr] = phase_data
+    # cylindrical gauge: seam only in x (1 for non square)
     if seam_across_kx:
         phase = gauge_seam[i, band]**ny
     else:
         phase = gauge_seam[j, band]**nx
-    # cylindrical gauge: seam only in x (1 for non square)
-    return phase * u[i, j, :, band]
+    #orbital basis phase
+    Ug = np.linalg.matrix_power(U_arr[1], ny) @ \
+        np.linalg.matrix_power(U_arr[0], nx)
+    return Ug@(phase * u[i, j, :, band])
 
 def _SavePerQ(path, i, j, e_all, f_keep, meta=None):
     """Save per-Q results atomically."""
@@ -542,20 +576,20 @@ def _SavePerQ(path, i, j, e_all, f_keep, meta=None):
     return out
 
 #---Parallel code---#
-def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):    
+def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, phase_data_path, outdir):    
     """
     Worker function executed in each process.
-    Qx, Qy, cfg_path, ni_wf_path, ni_evals_path, gx_path, outdir
+    Qx, Qy, cfg_path, ni_wf_path, ni_evals_path, phase_data, outdir
     """
     n_Fs = cfg["n_Fs"]
     # Large arrays: mmap_mode="r" avoids copying; workers open read-only
     ni_wf = np.load(ni_wf_path, mmap_mode="r")
     ni_evals = np.load(ni_evals_path, mmap_mode="r")
-    gx = np.load(gx_path, mmap_mode="r")
+    phase_data = np.load(phase_data_path, mmap_mode="r")
 
     # The function GetH2Band must accept these mmap arrays
     try:
-        H_Q = GetH2Band(Qx, Qy, ni_wf, ni_evals, cfg, gx)
+        H_Q = GetH2Band(Qx, Qy, ni_wf, ni_evals, cfg, phase_data)
     except Exception as e:
         # propagate error in a readable way for the driver
         raise RuntimeError(f"GetH2Band failed for Q=({Qx},{Qy}): {e}")
@@ -598,7 +632,7 @@ def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, gx_path, outdir):
     out = _SavePerQ(outdir, Qx, Qy, sorted_e_Q, f_keep, meta=meta)
     # Return path for logging
     return str(out)
-def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, gx_path, outdir,n_workers = None, resume=True):
+def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, phase_data_path, outdir,n_workers = None, resume=True):
     """
     Parallel driver. Saves per-Q `.npz` files in outdir.
     cfg: config dict (small enough to pickle/pass)
@@ -650,7 +684,7 @@ def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, gx_path, outdir,n_workers = 
             ex.submit(
                 SolveOneQTask,
                 i, j, cfg,
-                str(ni_wf_path), str(ni_evals_path), str(gx_path),
+                str(ni_wf_path), str(ni_evals_path), str(phase_data_path), 
                 str(outdir),
             )
             for (i, j) in tasks
@@ -715,10 +749,7 @@ def Main():
     SaveConfig(config_file,cfg)
     # --- compute noninteracting pieces
     ni_evals, ni_wf = SolveBzNoninteracting(cfg)
-    seamTest = cfg["Grid"].get("SeamTest",False)
-    gx = SeamPhaseG(ni_wf)
-    if seamTest:
-        gx.fill(1)
+    phase_data = SeamHandle(ni_wf,cfg) #[g1,U_G_arr]
 
     # directory layout
     perq_dir = Path(data_path) / "perQ"
@@ -729,17 +760,22 @@ def Main():
     # Save large arrays to disk once (workers will mmap them)
     ni_wf_path = inputs_dir / "ni_wf.npy"
     ni_evals_path = inputs_dir / "ni_evals.npy"
-    gx_path = inputs_dir / "gx.npy"
+    phase_data_path = inputs_dir / "phase_data.npy"
     np.save(ni_wf_path, ni_wf)
     np.save(ni_evals_path, ni_evals)
-    np.save(gx_path, gx)
+    np.save(phase_data_path, phase_data)
 
     # Run the parallel Q pipeline (computes and saves per-Q npz files)
-    RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(gx_path),
+    RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(phase_data_path),
                        perq_dir, resume=True)
 
     # Stitch the outputs you want:
     NQ = cfg["NQ"]
+    b1 = cfg["rec_vec"][0]
+    b2 = cfg["rec_vec"][1]
+    dQ1 = np.linalg.norm(b1)/NQ
+    dQ2 = np.linalg.norm(b2)/NQ
+    range_handle = cfg["Grid"]["Range"]
     n_Fs = cfg["n_Fs"]
     Nk = cfg["Nk"]
     Nk2 = Nk * Nk
@@ -761,11 +797,22 @@ def Main():
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
             v = cfg.get("v_band")
             c = cfg.get("c_band")
-            UnBC, Cn = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"])
-            UnProb = ExcitonWF.GetExcitonProbability(Fn, ni_wf, v, c, gx, cfg["Grid"]["Range"])
+            # dot product result
+            UnBCVprod, CnVprod = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, phase_data, cfg["Grid"]["Range"])
+            #projector
+            UnMetric,UnBCProj, exc_n_state, projector_n = ExcitonWF.ExcitonProjectorGeometry(Fn,ni_wf,phase_data,c,v,dQ1=dQ1,dQ2=dQ2, range_handle = range_handle)
+            cell_area = abs(np.cross(b1, b2))
+            dA = cell_area / (NQ*NQ)
+            UnCProj = np.sum(UnBCProj) * dA / (2*np.pi)
+            #wavefunction:
+            UnBCWF,UnCWF = ExcitonWF.GetBerryCurvature1band(exc_state)
             SaveData(Fn, f"F[{n}]", sub_data_path)
-            SaveData(UnBC, f"U[{n}]BC_C_{Cn}", sub_data_path)
-            SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
+            SaveData(UnBCVprod, f"Vprod_U[{n}]BC_C_{CnVprod}", sub_data_path)
+            SaveData(UnCProj, f"Proj_U[{n}]BC_C_{UnCProj}", sub_data_path)
+            SaveData(UnBCVprod, f"WF_U[{n}]BC_C_{UnCWF}", sub_data_path)
+            SaveData(UnMetric, f"Metric_U[{n}]", sub_data_path)
+            SaveData(exc_n_state, f"Exciton_State[{n}]", sub_data_path)
+            #SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
     if down_path:
         DataManager.CopyDirectory(sub_data_path,down_path)
     end = datetime.now()
