@@ -11,14 +11,15 @@ def CentralDiffPeriodic(arr, axis, step):
     return (np.roll(arr, -1, axis=axis) - np.roll(arr, 1, axis=axis)) / (2.0 * step)
 
 
+
 def BuildExcitonStateOneQ(
     Fn_Q,                 # shape (Np1, Np2)
     ni_wf,            # full Bloch arrays, used by u_ext
     phase_data,
     band_c,
     band_v,
-    q1_idx,
-    q2_idx,
+    Q1,
+    Q2,
     range_handle="forward"
 ):
     """
@@ -26,15 +27,15 @@ def BuildExcitonStateOneQ(
 
     Returns
     -------
-    X : complex array, shape (D,)
-        Exciton state in the tensor-product basis.
+    X : complex array, shape (Np*Np*D,)
+        Exciton state in the tensor-product-momentum basis.
         D = Norb * Norb.
     """
     Np1, Np2 = Fn_Q.shape
 
     Norb = ni_wf.shape[2]
     D = Norb * Norb
-    X = np.zeros(D, dtype=complex)
+    X = np.zeros((Np1, Np2, D), dtype=complex)
 
     for p1 in range(Np1):
         for p2 in range(Np2):
@@ -56,8 +57,8 @@ def BuildExcitonStateOneQ(
             # (uc ⊗ uv*)_{ab} = uc[a] * conj(uv[b])
             phi = np.kron(uc, np.conj(uv))  # shape (D,)
 
-            X += Fn_Q[p1, p2] * phi
-
+            X[p1,p2,:] = Fn_Q[p1, p2] * phi
+    X = X.reshape(Np1 * Np2 * D)
     return X
 
 
@@ -201,7 +202,7 @@ def GetExcitonProbability(Fn,ni_wf,v,c,ltype,phase_data,range_handle):
             P[i,j] = ExcitonVProd_PBasis((i,j),(i,j),Fn,ni_wf,v,c,ltype,phase_data,range_handle)
     return P
 
-def def ExcitonVProd_PBasis(Q,Qp,Fn,ni_wf,v,c,phase_data,range_handle,seam_across_k1=False):
+def ExcitonVProd_PBasis(Q,Qp,Fn,ni_wf,v,c,phase_data,range_handle,seam_across_k1=False):
     """
     accepts Q and Qp integer touples, Fn[Qx,Qy,px,py] ni_wf[kx,ky,orb,band]
     v,c band indices, phase_data[g1[ky,band] sewing phase, U_g_arr [orb,orb] orbital sewing phase],
@@ -326,7 +327,7 @@ def MainFTrans(cfg_dir,band,storage_path):
     F0 = np.load(f_file, mmap_mode='r')
     F0_flat = F0.reshape(NQ, NQ, Np*Np)
     _, ni_wf = TE.SolveBzNoninteracting(cfg)
-    phase_data = TE.SeamHandle(ni_wf,cfg
+    phase_data = TE.SeamHandle(ni_wf,cfg)
     dQ = (1,0)
     S_p = GetElectronHoleOverlaps(ni_wf,g1,dQ=dQ)
     print("finished overlaps")

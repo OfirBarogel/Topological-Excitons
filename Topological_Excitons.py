@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import DataManager
 from scipy.linalg import eigh
-#ver 0.1.6
+#ver 0.1.7
 def GetConfig(filename):
     with open(filename, 'r') as stream:
         try:
@@ -389,17 +389,42 @@ def SeamPhaseG(u_g, seam_across_kx=False):
 
         return g2
 
-def SeamOrbitalPhaseUg(rec_vec,tau):
-    "returns U_arr=[Ug1,Ug2] the phases for sewing in the oribtal basis"
-    Ug1 = GetU_G(rec_vec[0],tau)
-    Ug2 = GetU_G(rec_vec[1],tau)
-    U_arr = [Ug1,Ug2]
-    return U_arr
+def PrecomputeUg(rec_vec, tau, max_n1=4, max_n2=4):
+    """
+    Precompute the combined orbital phase for every (n1, n2).
+    Ug[n1 + max_n1, n2 + max_n2, orbital]
+    """
+    n_orb = tau.shape[0]
 
+    Ug = np.empty(
+        (2*max_n1 + 1, 2*max_n2 + 1, n_orb),
+        dtype=complex
+    )
 
-def GetU_G(G, tau):
-    phases = np.exp(-1j * tau @ G)
-    return np.diag(phases)
+    for n1 in range(-max_n1, max_n1 + 1):
+        for n2 in range(-max_n2, max_n2 + 1):
+            G = n1 * rec_vec[0] + n2 * rec_vec[1]
+            Ug[n1 + max_n1, n2 + max_n2, :] = np.exp(-1j * tau @ G)
+
+    return Ug
+
+def u_ext(u, phase_data, K, band, seam_across_kx=False):
+    i, j, nx, ny = K
+
+    gauge_seam = phase_data["g1"]
+    Ug = phase_data["Ug"]
+
+    max_n1 = (Ug.shape[0] - 1) // 2 #should be 4 in code, physically it should be 2 but better safe than sorry
+    max_n2 = (Ug.shape[1] - 1) // 2
+
+    if seam_across_kx:
+        g_phase = gauge_seam[i, band] ** ny
+    else:
+        g_phase = gauge_seam[j, band] ** nx
+
+    orbital_phase = Ug[nx + max_n1, ny + max_n2, :]
+
+    return orbital_phase * g_phase * u[i, j, :, band]
 
 def FirstRealGauge(v):
     first = 0
@@ -470,12 +495,17 @@ def SolveBzNoninteracting(cfg):
             wf_BZ[i,j] = vec
     wf_BZ[:,:,:,:] = ParallelTransportCylindrical(wf_BZ[:,:,:,:])
     return eval_BZ, wf_BZ
+
 def SeamHandle(ni_wf,cfg):
     b= cfg["rec_vec"]
     tau = cfg["tau"]
     g1 = SeamPhaseG(ni_wf)
-    U_arr = SeamOrbitalPhaseUg(b,tau)
-    return [g1,U_arr]
+    Ug = PrecomputeUg(b,tau)
+    phase_data = {
+        "g1": g1,
+        "Ug": Ug
+    }
+    return phase_data
 
 def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,phase_data): 
     U = cfg["U"]
@@ -551,19 +581,6 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,phase_data):
                     X = U*V_x*np.vdot(uc, uv) * np.vdot(uvp, ucp)
                     H[p1,p2,p1p,p2p] = e - wk*(D-X)
     return H
-
-def u_ext(u, phase_data, K, band, seam_across_kx = False):
-    i, j, nx, ny = K
-    [gauge_seam , U_arr] = phase_data
-    # cylindrical gauge: seam only in x (1 for non square)
-    if seam_across_kx:
-        phase = gauge_seam[i, band]**ny
-    else:
-        phase = gauge_seam[j, band]**nx
-    #orbital basis phase
-    Ug = np.linalg.matrix_power(U_arr[1], ny) @ \
-        np.linalg.matrix_power(U_arr[0], nx)
-    return Ug@(phase * u[i, j, :, band])
 
 def _SavePerQ(path, i, j, e_all, f_keep, meta=None):
     """Save per-Q results atomically."""
@@ -760,10 +777,10 @@ def Main():
     # Save large arrays to disk once (workers will mmap them)
     ni_wf_path = inputs_dir / "ni_wf.npy"
     ni_evals_path = inputs_dir / "ni_evals.npy"
-    phase_data_path = inputs_dir / "phase_data.npy"
+    phase_data_path = inputs_dir / "phase_data.npz"
     np.save(ni_wf_path, ni_wf)
     np.save(ni_evals_path, ni_evals)
-    np.save(phase_data_path, phase_data)
+    np.savez(phase_data_path,g1=phase_data["g1"],Ug=phase_data["Ug"])
 
     # Run the parallel Q pipeline (computes and saves per-Q npz files)
     RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(phase_data_path),
