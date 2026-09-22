@@ -81,7 +81,67 @@ def CopyDirectory(src_dir, dst_parent_dir):
 
     print(f"Copied '{src}' -> '{dst}'")
 
-if __name__ == "__main__":
+from pathlib import Path
+import shutil
+
+
+def CopyDownloadSubset(download_dir, band):
+    source = Path(download_dir).resolve()
+
+    if not source.is_dir():
+        raise NotADirectoryError(str(source))
+
+    destination = source / f"{source.name}_Subset"
+
+    # Exclude current and previously generated output folders.
+    excluded = {
+        f"{source.name}_Subset",
+    }
+
+    children = [
+        folder for folder in source.iterdir()
+        if folder.is_dir() and folder.name not in excluded
+    ]
+
+    destination.mkdir(exist_ok=True)
+    copied = 0
+
+    for folder in sorted(children):
+        config = folder / "config.yml"
+        energies = folder / "Exciton_Energys.npy"
+
+        # Literal matching avoids glob interpreting [0] as a pattern.
+        bc_files = [
+            file for file in folder.iterdir()
+            if file.is_file()
+            and file.name.startswith((f"Vprod_U[{band}]BC_C_", f"U[{band}]BC_C_"))
+            and file.suffix == ".npy"
+        ]
+
+        missing = []
+        if not config.is_file():
+            missing.append("config.yml")
+        if not energies.is_file():
+            missing.append("Exciton_Energys.npy")
+        if not bc_files:
+            missing.append(f"Vprod_U[{band}]BC_C_*.npy or U[{band}]BC_C_*")
+
+        if missing:
+            print(f"Skipping {folder.name}: missing {', '.join(missing)}")
+            continue
+
+        target = destination / folder.name
+        target.mkdir(exist_ok=True)
+
+        for file in [config, energies] + bc_files:
+            shutil.copy2(file, target / file.name)
+
+        copied += 1
+
+    print(f"Copied {copied} folders to {destination}")
+    return destination
+
+def MainFSlice():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True, help="Input directory")
     ap.add_argument("--band", required=True, help="band index to slice")
@@ -97,3 +157,17 @@ if __name__ == "__main__":
     data_name = Path(f"F[{band_num}].npy")
     data_path = storage_path / data_folder / data_name
     np.save(data_path,slice_0)
+
+def MainMinDownload():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", required=True, help="Input directory")
+    ap.add_argument("--band", required=True, help="band index to slice")
+    args = ap.parse_args()
+    storage_path = Path("/tobiasholder-storage/ofirbarogel")
+    dir_name = args.dir
+    band = args.band
+    down_folder = Path(f"{storage_path}/Download/{dir_name}")
+    CopyDownloadSubset(down_folder,band)
+
+if __name__ == "__main__":
+    MainMinDownload()

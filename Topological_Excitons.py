@@ -116,7 +116,7 @@ def GetAnalyticQWZ(kx,ky,M):
 def QWZHamiltonian(kx,ky,M, t = -1, tt = 0):
     pauli_mat =[np.array([[0,1],[1,0]]), np.array([[0,-1j],[1j,0]]), np.array([[1,0],[0,-1]])]
     I = np.array([[1,0],[0,1]])
-    return -tt*(np.cos(kx)+np.cos(ky))+np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M-t*(np.cos(kx)+np.cos(ky)))*pauli_mat[2]
+    return -tt*(np.cos(kx)+np.cos(ky))*I+np.sin(kx)*pauli_mat[0] + np.sin(ky)*pauli_mat[1] + (M-t*(np.cos(kx)+np.cos(ky)))*pauli_mat[2]
 
 def HaldaneH(kx, ky, t1=1.0, t2=0.1, phi=0, M=0, a=1.0):
     d = np.array([
@@ -560,7 +560,7 @@ def GetH2Band(Q1,Q2,ni_wf,ni_evals,cfg,phase_data):
                     elif interaction.get("kind") == "constant":
                         V_d = params.get('vd')
                         V_x = params.get('vx')
-                    elif interaction.get("kind") == "seperable":
+                    elif interaction.get("kind") == "separable":
                         V = params.get('vx')
                         #<u_c(p+Q/2)|u_c(p-Q/2)><u_v(p'-Q/2)|u_v(p'+Q/2)>
                         # <u_c(Kc)|u_c(Kv)><u_v(Kv)|u_v(Kc)>
@@ -649,6 +649,24 @@ def SolveOneQTask(Qx, Qy, cfg, ni_wf_path, ni_evals_path, phase_data_path, outdi
     out = _SavePerQ(outdir, Qx, Qy, sorted_e_Q, f_keep, meta=meta)
     # Return path for logging
     return str(out)
+
+def ResolveWorkerCount(cfg, n_workers=None):
+    if n_workers is not None:
+        return max(1, int(n_workers))
+
+    if cfg.get("RunType", "Local") == "Local":
+        return max(1, multiprocessing.cpu_count() - 1)
+
+    if cfg.get("RunType") == "Cluster":
+        return max(
+            1,
+            int(os.environ.get(
+                "SLURM_CPUS_PER_TASK",
+                multiprocessing.cpu_count(),
+            )),
+        )
+
+    raise ValueError(f"Unknown RunType: {cfg.get('RunType')}")
 def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, phase_data_path, outdir,n_workers = None, resume=True):
     """
     Parallel driver. Saves per-Q `.npz` files in outdir.
@@ -671,28 +689,6 @@ def RunAllQParallel(cfg, ni_evals_path, ni_wf_path, phase_data_path, outdir,n_wo
     if not tasks:
         print("All Q tasks already exist; nothing to run.")
         return
-
-    if n_workers is None:
-        runtype = cfg.get("RunType", "Local")
-
-        if runtype == "Local":
-            # Use almost all local cores
-            n_workers = max(1, multiprocessing.cpu_count() - 1)
-    
-        elif runtype == "Cluster":
-            # Prefer scheduler-provided core count
-            # SLURM example:
-            n_workers = os.environ.get("SLURM_CPUS_PER_TASK")
-    
-            if n_workers is None:
-                # fallback if not running under SLURM
-                print("Warning: SLURM_CPUS_PER_TASK not set, falling back to cpu_count()")
-                n_workers = multiprocessing.cpu_count()
-            else:
-                n_workers = int(n_workers)
-    
-        else:
-            raise ValueError(f"Unknown RunType: {runtype}")
 
     print(f"Running {len(tasks)} Q-points with {n_workers} workers...")
 
@@ -746,7 +742,6 @@ def HandlePaths(runtype,cfg_name,down_folder):
     else:
         down_path = None
     return data_path, sub_data_path,down_path
-    
 def Main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, help="Path to config.yml")
@@ -757,9 +752,11 @@ def Main():
     cfg_name = Path(args.config).stem
     start = datetime.now()
     # Handle directiries
+    calculate_geometry = cfg["Grid"]["SeamTest"] #SeamTest has been reporposed for calculate geometry bool
     #timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
     runtype = cfg["RunType"]
     data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name,down_folder)
+    runtime_path = data_path / "Runtime.txt"
     os.makedirs(data_path, exist_ok=True)
     os.makedirs(sub_data_path, exist_ok=True)
     config_file = sub_data_path / "config.yml"
@@ -781,17 +778,24 @@ def Main():
     np.save(ni_wf_path, ni_wf)
     np.save(ni_evals_path, ni_evals)
     np.savez(phase_data_path,g1=phase_data["g1"],Ug=phase_data["Ug"])
-
+    
+    task_time = datetime.now() - start
+    with runtime_path.open("a") as f:
+        f.write(f"Setup: {task_time}\n")
     # Run the parallel Q pipeline (computes and saves per-Q npz files)
+    task_time = datetime.now()
+    n_workers = ResolveWorkerCount(cfg)
     RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(phase_data_path),
-                       perq_dir, resume=True)
-
+                       perq_dir,n_workers = n_workers, resume=True)
+    task_time = datetime.now() - task_time
+    with runtime_path.open("a") as f:
+        f.write(f"BSE: {task_time}\n")
     # Stitch the outputs you want:
     NQ = cfg["NQ"]
     b1 = cfg["rec_vec"][0]
     b2 = cfg["rec_vec"][1]
-    dQ1 = np.linalg.norm(b1)/NQ
-    dQ2 = np.linalg.norm(b2)/NQ
+    dQ1 = 2*np.linalg.norm(b1)/NQ
+    dQ2 = 2*np.linalg.norm(b2)/NQ
     range_handle = cfg["Grid"]["Range"]
     n_Fs = cfg["n_Fs"]
     Nk = cfg["Nk"]
@@ -804,36 +808,102 @@ def Main():
     evecs_keep_path = sub_data_path / "F_keep.npy"
     DataManager.StitchEvecs(perq_dir, evecs_keep_path, NQ, n_Fs) #Saves F[NQ,NQ,Nk^2,n_Fs]
 
-    # Now downstream code can use these .npy or load per-Q files on demand.
     if n_Fs and n_Fs > 0:
-        # open memmap for eigenvectors: shape (NQ, NQ, Nk2, n_Fs)
+        # Only needed for saving F[n] and running the older Vprod method.
         Fmem = np.load(evecs_keep_path, mmap_mode="r")
+    
+        v = int(cfg["v_band"])
+        c = int(cfg["c_band"])
         for n in range(n_Fs):
-            # reconstruct Fn in original shape expected by ExcitonWF
-            Fn_flat = Fmem[:, :, :, n]  # shape (NQ, NQ, Nk2)
+            task_time = datetime.now()
+            # ============================================================
+            # 1. Optional: preserve F[n] and the Vprod method
+            # ============================================================
+    
+            Fn_flat = Fmem[:, :, :, n]
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
-            v = cfg.get("v_band")
-            c = cfg.get("c_band")
-            # dot product result
-            UnBCVprod, CnVprod = ExcitonWF.GetExcitonBC(Fn, ni_wf, v, c, phase_data, cfg["Grid"]["Range"])
-            #projector
-            UnMetric,UnBCProj, exc_n_state, projector_n = ExcitonWF.ExcitonProjectorGeometry(Fn,ni_wf,phase_data,c,v,dQ1=dQ1,dQ2=dQ2, range_handle = range_handle)
-            cell_area = abs(np.cross(b1, b2))
-            dA = cell_area / (NQ*NQ)
-            UnCProj = np.sum(UnBCProj) * dA / (2*np.pi)
-            #wavefunction:
-            UnBCWF,UnCWF = ExcitonWF.GetBerryCurvature1band(exc_state)
-            SaveData(Fn, f"F[{n}]", sub_data_path)
-            SaveData(UnBCVprod, f"Vprod_U[{n}]BC_C_{CnVprod}", sub_data_path)
-            SaveData(UnCProj, f"Proj_U[{n}]BC_C_{UnCProj}", sub_data_path)
-            SaveData(UnBCVprod, f"WF_U[{n}]BC_C_{UnCWF}", sub_data_path)
-            SaveData(UnMetric, f"Metric_U[{n}]", sub_data_path)
-            SaveData(exc_n_state, f"Exciton_State[{n}]", sub_data_path)
-            #SaveData(UnProb, f"U[{n}]_Prob", sub_data_path)
+    
+            SaveData(Fn, "F[{}]".format(n), sub_data_path)
+    
+            UnBCVprod, CnVprod = ExcitonWF.GetExcitonBC(
+                Fn,
+                ni_wf,
+                v,
+                c,
+                phase_data,
+                range_handle,
+            )
+    
+            SaveData(
+                UnBCVprod,
+                "Vprod_U[{}]BC_C_{}".format(n, CnVprod),
+                sub_data_path,
+            )
+    
+            # Fn is no longer needed by the projector/link pipeline.
+            del Fn
+            del Fn_flat
+            task_time = datetime.now() - task_time
+            with runtime_path.open("a") as f:
+                f.write(f"Vprod BC {n}: {task_time}\n")
+            # ============================================================
+            # 2. New parallel state-cache and geometry pipeline
+            # ============================================================
+            if calculate_geometry:
+                task_time = datetime.now()
+                state_dir = (
+                    data_path
+                    / "ExcitonStates_U[{}]".format(n)
+                )
+        
+                geometry_per_q_dir = (
+                    data_path
+                    / "ExcitonGeometry_U[{}]_per_Q".format(n)
+                )
+        
+                geometry_output_path = (
+                    sub_data_path
+                    / "ExcitonGeometry_U[{}].npz".format(n)
+                )
+        
+                result_path = ExcitonWF.RunExcitonGeometryPipeline(
+                    cfg=cfg,
+        
+                    # Original BSE per-Q files containing f_keep.
+                    bse_dir=perq_dir,
+        
+                    # Same single-particle input files used by BSE workers.
+                    ni_wf_path=ni_wf_path,
+                    phase_data_path=phase_data_path,
+        
+                    # New per-band output locations.
+                    state_dir=state_dir,
+                    geometry_dir=geometry_per_q_dir,
+                    output_path=geometry_output_path,
+        
+                    band_c=c,
+                    band_v=v,
+        
+                    # Select f_keep[:, n].
+                    exciton_state_index=n,
+        
+                    dQ1=dQ1,
+                    dQ2=dQ2,
+        
+                    normalize=True,
+                    range_handle=range_handle,
+        
+                    n_workers=n_workers,
+                    resume=True,
+                )
+                task_time = datetime.now()-task_time
+                with runtime_path.open("a") as f:
+                    f.write(f"Geometry {n}: {task_time}\n")
+
     if down_path:
         DataManager.CopyDirectory(sub_data_path,down_path)
-    end = datetime.now()
-    elapsed = end-start
-    (data_path / "Runtime.txt").write_text(f"{elapsed}\n")
+    elapsed = datetime.now()-start
+    with runtime_path.open("a") as f:
+        f.write(f"Total: {elapsed}\n")
 if __name__ == "__main__":
     Main()

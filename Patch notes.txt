@@ -9,7 +9,8 @@ Major:
 -Added high symmetry plots for exciton energies
 -Added optional download folder for parameter scans
 -Fixed orbital wrapping phase
--Added projector geometry and wavefunction representation in Exciton_WF
+-Added projector geometry and wavefunction representation in Exciton_WF (optional, controlled by SeamTest bool)
 minor:
 - forward is spelled forward
 - changed config structre (grid range handle and seam)
+- dataManager can now create a minimal download folder
