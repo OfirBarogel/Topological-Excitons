@@ -1,16 +1,4 @@
-ver 0.1.7
+ver 0.1.8
 Major:
--Added Hexagonal 2 band
--Changed normalization of integral to include Jacobian
--b1 b2 reciprocal lattice instead of standard grid
--Added marker handling for Graph2D
--Added axes manager for Graph2D
--Added classes in separate folders
--Added high symmetry plots for exciton energies
--Added optional download folder for parameter scans
--Fixed orbital wrapping phase
--Added projector geometry and wavefunction representation in Exciton_WF (optional, controlled by SeamTest bool)
+-Added continuation .py
 minor:
-- forward is spelled forward
-- changed config structre (grid range handle and seam)
-- dataManager can now create a minimal download folder

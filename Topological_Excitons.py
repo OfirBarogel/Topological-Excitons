@@ -4,13 +4,15 @@ import os
 from pathlib import Path
 import argparse
 from datetime import datetime
+from typing import List
+from zipfile import BadZipFile
 import yaml
 import ExcitonWF
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import DataManager
 from scipy.linalg import eigh
-#ver 0.1.7
+#ver 0.1.8
 def GetConfig(filename):
     with open(filename, 'r') as stream:
         try:
@@ -742,55 +744,129 @@ def HandlePaths(runtype,cfg_name,down_folder):
     else:
         down_path = None
     return data_path, sub_data_path,down_path
-def Main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="Path to config.yml")
-    ap.add_argument("--down_folder",default = None, required = False, help = "Directory name in Download folder")
-    args = ap.parse_args()
-    down_folder = args.down_folder
-    cfg = GetConfig(args.config)
-    cfg_name = Path(args.config).stem
-    start = datetime.now()
-    # Handle directiries
-    calculate_geometry = cfg["Grid"]["SeamTest"] #SeamTest has been reporposed for calculate geometry bool
-    #timestamp = start.strftime("%Y-%m-%d_%H-%M-%S")
-    runtype = cfg["RunType"]
-    data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name,down_folder)
-    runtime_path = data_path / "Runtime.txt"
-    os.makedirs(data_path, exist_ok=True)
-    os.makedirs(sub_data_path, exist_ok=True)
-    config_file = sub_data_path / "config.yml"
-    SaveConfig(config_file,cfg)
-    # --- compute noninteracting pieces
-    ni_evals, ni_wf = SolveBzNoninteracting(cfg)
-    phase_data = SeamHandle(ni_wf,cfg) #[g1,U_G_arr]
 
-    # directory layout
-    perq_dir = Path(data_path) / "perQ"
-    inputs_dir = Path(data_path) / "inputs"
+def LoadOrCreateInputs(cfg, inputs_dir):
+    """Load a complete input cache, or rebuild the whole cache if needed."""
+    inputs_dir = Path(inputs_dir)
     inputs_dir.mkdir(parents=True, exist_ok=True)
-    perq_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save large arrays to disk once (workers will mmap them)
     ni_wf_path = inputs_dir / "ni_wf.npy"
     ni_evals_path = inputs_dir / "ni_evals.npy"
     phase_data_path = inputs_dir / "phase_data.npz"
-    np.save(ni_wf_path, ni_wf)
-    np.save(ni_evals_path, ni_evals)
-    np.savez(phase_data_path,g1=phase_data["g1"],Ug=phase_data["Ug"])
-    
+
+    try:
+        # Open both arrays here so an incomplete or damaged cache is detected
+        # before any BSE work is submitted.
+        ni_wf = np.load(ni_wf_path, mmap_mode="r")
+        ni_evals_check = np.load(ni_evals_path, mmap_mode="r")
+
+        with np.load(phase_data_path) as saved:
+            phase_data = {
+                "g1": saved["g1"],
+                "Ug": saved["Ug"],
+            }
+
+        Nk = int(cfg["Nk"])
+        expected_grid_shape = (Nk, Nk)
+        if ni_wf.shape[:2] != expected_grid_shape:
+            raise ValueError(
+                "Cached ni_wf grid does not match the stored config"
+            )
+        if ni_evals_check.shape[:2] != expected_grid_shape:
+            raise ValueError(
+                "Cached ni_evals grid does not match the stored config"
+            )
+
+        del ni_evals_check
+        print("Using cached single-particle inputs.")
+
+    except (
+        FileNotFoundError,
+        OSError,
+        ValueError,
+        KeyError,
+        EOFError,
+        BadZipFile,
+    ) as exc:
+        print(
+            "Input cache is missing, incomplete, or incompatible; "
+            f"rebuilding it ({exc})."
+        )
+
+        # Always rebuild all three files together so that the workers never
+        # receive a mixture of inputs from different setup attempts.
+        ni_evals, ni_wf = SolveBzNoninteracting(cfg)
+        phase_data = SeamHandle(ni_wf, cfg)
+
+        np.save(ni_wf_path, ni_wf)
+        np.save(ni_evals_path, ni_evals)
+        np.savez(
+            phase_data_path,
+            g1=phase_data["g1"],
+            Ug=phase_data["Ug"],
+        )
+
+    return (
+        ni_wf,
+        phase_data,
+        ni_evals_path,
+        ni_wf_path,
+        phase_data_path,
+    )
+
+def RunPipeline(
+    cfg,
+    data_path,
+    sub_data_path,
+    down_path=None,
+    calculate_geometry=False,
+):
+    """Run every currently incomplete stage of an exciton calculation."""
+    start = datetime.now()
+
+    data_path = Path(data_path)
+    sub_data_path = Path(sub_data_path)
+    down_path = Path(down_path) if down_path is not None else None
+
+    data_path.mkdir(parents=True, exist_ok=True)
+    sub_data_path.mkdir(parents=True, exist_ok=True)
+
+    runtime_path = data_path / "Runtime.txt"
+    perq_dir = data_path / "perQ"
+    inputs_dir = data_path / "inputs"
+    perq_dir.mkdir(parents=True, exist_ok=True)
+
+    (
+        ni_wf,
+        phase_data,
+        ni_evals_path,
+        ni_wf_path,
+        phase_data_path,
+    ) = LoadOrCreateInputs(cfg, inputs_dir)
+
     task_time = datetime.now() - start
     with runtime_path.open("a") as f:
         f.write(f"Setup: {task_time}\n")
-    # Run the parallel Q pipeline (computes and saves per-Q npz files)
+
+    # Existing Q files are skipped, so this handles both new and interrupted
+    # BSE calculations.
     task_time = datetime.now()
     n_workers = ResolveWorkerCount(cfg)
-    RunAllQParallel(cfg, str(ni_evals_path), str(ni_wf_path), str(phase_data_path),
-                       perq_dir,n_workers = n_workers, resume=True)
+    RunAllQParallel(
+        cfg,
+        ni_evals_path,
+        ni_wf_path,
+        phase_data_path,
+        perq_dir,
+        n_workers=n_workers,
+        resume=True,
+    )
     task_time = datetime.now() - task_time
     with runtime_path.open("a") as f:
         f.write(f"BSE: {task_time}\n")
-    # Stitch the outputs you want:
+
+    # Stitching and later outputs are safe to regenerate if a previous job
+    # stopped after completing the BSE stage.
     NQ = cfg["NQ"]
     b1 = cfg["rec_vec"][0]
     b2 = cfg["rec_vec"][1]
@@ -800,6 +876,7 @@ def Main():
     n_Fs = cfg["n_Fs"]
     Nk = cfg["Nk"]
     Nk2 = Nk * Nk
+
     # 1) full eigenvalue stitching (cheapish)
     evals_all_path = sub_data_path / "Exciton_Energys.npy"
     DataManager.StitchEvals(perq_dir, evals_all_path, NQ)
@@ -811,7 +888,7 @@ def Main():
     if n_Fs and n_Fs > 0:
         # Only needed for saving F[n] and running the older Vprod method.
         Fmem = np.load(evecs_keep_path, mmap_mode="r")
-    
+
         v = int(cfg["v_band"])
         c = int(cfg["c_band"])
         for n in range(n_Fs):
@@ -819,12 +896,12 @@ def Main():
             # ============================================================
             # 1. Optional: preserve F[n] and the Vprod method
             # ============================================================
-    
+
             Fn_flat = Fmem[:, :, :, n]
             Fn = Fn_flat.reshape(NQ, NQ, Nk, Nk)
-    
+
             SaveData(Fn, "F[{}]".format(n), sub_data_path)
-    
+
             UnBCVprod, CnVprod = ExcitonWF.GetExcitonBC(
                 Fn,
                 ni_wf,
@@ -833,13 +910,13 @@ def Main():
                 phase_data,
                 range_handle,
             )
-    
+
             SaveData(
                 UnBCVprod,
                 "Vprod_U[{}]BC_C_{}".format(n, CnVprod),
                 sub_data_path,
             )
-    
+
             # Fn is no longer needed by the projector/link pipeline.
             del Fn
             del Fn_flat
@@ -855,44 +932,44 @@ def Main():
                     data_path
                     / "ExcitonStates_U[{}]".format(n)
                 )
-        
+
                 geometry_per_q_dir = (
                     data_path
                     / "ExcitonGeometry_U[{}]_per_Q".format(n)
                 )
-        
+
                 geometry_output_path = (
                     sub_data_path
                     / "ExcitonGeometry_U[{}].npz".format(n)
                 )
-        
+
                 result_path = ExcitonWF.RunExcitonGeometryPipeline(
                     cfg=cfg,
-        
+
                     # Original BSE per-Q files containing f_keep.
                     bse_dir=perq_dir,
-        
+
                     # Same single-particle input files used by BSE workers.
                     ni_wf_path=ni_wf_path,
                     phase_data_path=phase_data_path,
-        
+
                     # New per-band output locations.
                     state_dir=state_dir,
                     geometry_dir=geometry_per_q_dir,
                     output_path=geometry_output_path,
-        
+
                     band_c=c,
                     band_v=v,
-        
+
                     # Select f_keep[:, n].
                     exciton_state_index=n,
-        
+
                     dQ1=dQ1,
                     dQ2=dQ2,
-        
+
                     normalize=True,
                     range_handle=range_handle,
-        
+
                     n_workers=n_workers,
                     resume=True,
                 )
@@ -901,9 +978,34 @@ def Main():
                     f.write(f"Geometry {n}: {task_time}\n")
 
     if down_path:
-        DataManager.CopyDirectory(sub_data_path,down_path)
+        DataManager.CopyDirectory(sub_data_path,down_path/sub_data_path.name)
     elapsed = datetime.now()-start
     with runtime_path.open("a") as f:
         f.write(f"Total: {elapsed}\n")
+
+def Main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True, help="Path to config.yml")
+    ap.add_argument("--down_folder",default = None, required = False, help = "Directory name in Download folder")
+    args = ap.parse_args()
+    down_folder = args.down_folder
+    cfg = GetConfig(args.config)
+    cfg_name = Path(args.config).stem
+    calculate_geometry = cfg["Grid"]["SeamTest"] #SeamTest has been reporposed for calculate geometry bool
+    # Handle directiries
+    runtype = cfg["RunType"]
+    data_path, sub_data_path, down_path = HandlePaths(runtype,cfg_name,down_folder)
+    os.makedirs(data_path, exist_ok=True)
+    os.makedirs(sub_data_path, exist_ok=True)
+    config_file = sub_data_path / "config.yml"
+    SaveConfig(config_file,cfg)
+    RunPipeline(
+        cfg=cfg,
+        data_path=data_path,
+        sub_data_path=sub_data_path,
+        down_path=down_path,
+        calculate_geometry=calculate_geometry,
+    )
+
 if __name__ == "__main__":
     Main()

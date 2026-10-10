@@ -2,6 +2,8 @@ import numpy as np
 from pathlib import Path
 import argparse
 import shutil
+import re
+import os
 from numpy.lib.format import open_memmap
 
 
@@ -67,19 +69,17 @@ def StitchEvecs(perq_dir, out_evec_path, NQ, n_Fs):
     F.flush()
     print(f"Saved eigenvectors (first {n_Fs}) to {out_evec_path}")
 
-def CopyDirectory(src_dir, dst_parent_dir):
-    src = Path(src_dir)
-    dst_parent = Path(dst_parent_dir)
+def CopyDirectory(src, dst):
+    os.makedirs(dst, exist_ok=True)
 
-    if not src.is_dir():
-        raise ValueError(f"Source directory does not exist: {src}")
+    for name in os.listdir(src):
+        src_path = os.path.join(src, name)
+        dst_path = os.path.join(dst, name)
 
-    # Result: dst_parent/<source_directory_name>
-    dst = dst_parent / src.name
-
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-
-    print(f"Copied '{src}' -> '{dst}'")
+        if os.path.isdir(src_path):
+            CopyDirectory(src_path, dst_path)
+        else:
+            shutil.copy2(src_path, dst_path)
 
 from pathlib import Path
 import shutil
@@ -141,6 +141,69 @@ def CopyDownloadSubset(download_dir, band):
     print(f"Copied {copied} folders to {destination}")
     return destination
 
+def CopyLatestDirectories(
+    folder_list_path,
+    storage_path,
+    down_dir
+):
+    data_root = storage_path/"Data"
+    download_root = storage_path/"Download"/down_dir
+
+    download_root.mkdir(parents=True, exist_ok=True)
+
+    with folder_list_path.open("r") as file:
+        requested_names = [
+            line.strip()
+            for line in file
+            if line.strip()
+        ]
+
+    for base_name in requested_names:
+        pattern = re.compile(
+            r"^{}-slurm(?P<job_id>\d+)-s(?P<step>\d+)$".format(
+                re.escape(base_name)
+            )
+        )
+
+        matches = []
+
+        for path in data_root.iterdir():
+            if not path.is_dir():
+                continue
+
+            match = pattern.fullmatch(path.name)
+
+            if match is not None:
+                job_id = int(match.group("job_id"))
+                step = int(match.group("step"))
+                matches.append((job_id, step, path))
+
+        if not matches:
+            print("NOT FOUND: {}".format(base_name))
+            continue
+
+        # Highest job ID wins. Step breaks a tie if necessary.
+        job_id, step, job_directory = max(
+            matches,
+            key=lambda item: (item[0], item[1]),
+        )
+
+        source_path = job_directory / base_name
+        destination_path = download_root / base_name
+
+        print(
+            "Copying job {}: {} -> {}".format(
+                job_id,
+                source_path,
+                destination_path,
+            )
+        )
+
+        CopyDirectory(
+            source_path,
+            destination_path,
+        )
+
 def MainFSlice():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True, help="Input directory")
@@ -169,5 +232,16 @@ def MainMinDownload():
     down_folder = Path(f"{storage_path}/Download/{dir_name}")
     CopyDownloadSubset(down_folder,band)
 
+def MainCopyToDownDir():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", required=True, help="Download dir")
+    ap.add_argument("--band", required=True, help="band index to slice")
+    args = ap.parse_args()
+    storage_path = Path("/tobiasholder-storage/ofirbarogel")
+    dir_name = Path(args.dir)
+    band_num = args.band
+    folder_list_path = Path("copy_folders.txt")
+    CopyLatestDirectories(folder_list_path, storage_path, dir_name)
+    
 if __name__ == "__main__":
-    MainMinDownload()
+    MainCopyToDownDir()
